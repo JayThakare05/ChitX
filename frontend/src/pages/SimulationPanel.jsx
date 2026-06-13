@@ -183,7 +183,7 @@ const SimulationPanel = () => {
                 </div>
                 
                 <p className="text-[13px] text-[#134e4a]/40 mb-8 font-bold leading-relaxed px-1">
-                   Runs one month of the pool — collects payments from all members and picks a winner for the payout.
+                   Runs one month of the pool ï¿½ collects payments from all members and picks a winner for the payout.
                 </p>
 
                 <button 

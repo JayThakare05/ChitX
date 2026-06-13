@@ -33,9 +33,9 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "TrustScore", "tr
 
 try:
     trust_model = joblib.load(MODEL_PATH)
-    print(f"✅ TrustScore ML Model loaded from: {MODEL_PATH}")
+    print(f"[SUCCESS] TrustScore ML Model loaded from: {MODEL_PATH}")
 except Exception as e:
-    print(f"❌ Failed to load TrustScore model: {e}")
+    print(f"[ERROR] Failed to load TrustScore model: {e}")
     trust_model = None
 
 # ==============================
@@ -465,19 +465,12 @@ async def parse_statement(file: UploadFile = File(...)):
         contents = await file.read()
         csv_text = contents.decode("utf-8", errors="replace")
 
-        # 🖨️ PRINT CSV CONTENT TO AI SERVICE TERMINAL
-        print("\n" + "=" * 60)
-        print("📄 RECEIVED CSV FILE CONTENT:")
-        print("=" * 60)
-        print(csv_text[:3000])  # Print first 3000 chars to avoid flooding
-        if len(csv_text) > 3000:
-            print(f"... [{len(csv_text) - 3000} more characters truncated]")
-        print("=" * 60 + "\n")
+        print("-" * 60 + "\n")
 
         # 2. Parse into DataFrame
         df = pd.read_csv(io.StringIO(csv_text))
-        print(f"📊 CSV Shape: {df.shape[0]} rows × {df.shape[1]} columns")
-        print(f"📊 Columns: {list(df.columns)}")
+        print(f"SUMMARY CSV Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+        print(f"SUMMARY Columns: {list(df.columns)}")
 
         # 3. Process transactions
         txn_df = process_transactions(df)
@@ -496,9 +489,9 @@ async def parse_statement(file: UploadFile = File(...)):
         if total_debits == 0:
             total_debits = 30000
 
-        print(f"💰 Extracted — Credits: ₹{total_credits:,.2f}, Debits: ₹{total_debits:,.2f}")
-        print(f"📈 Avg Balance: ₹{avg_balance:,.2f}")
-        print(f"📊 Salary Consistency: {salary_c:.2f}, Spending Stability: {spending_s:.2f}, Payment Timeliness: {payment_t:.2f}")
+        print(f"STATS Extracted -- Credits: RS {total_credits:,.2f}, Debits: RS {total_debits:,.2f}")
+        print(f"STATS Avg Balance: RS {avg_balance:,.2f}")
+        print(f"STATS Salary Consistency: {salary_c:.2f}, Spending Stability: {spending_s:.2f}, Payment Timeliness: {payment_t:.2f}")
 
         # 5. Get CIBIL score from Groq
         cibil_score = await estimate_cibil_from_groq(
@@ -528,12 +521,12 @@ async def parse_statement(file: UploadFile = File(...)):
             prediction = trust_model.predict(input_data)[0]
             trust_score = round(float(prediction), 2)
             trust_score = max(10, min(100, trust_score))  # Clamp to 10-100
-            print(f"🎯 ML Model Predicted Trust Score: {trust_score}")
+            print(f"RESULT ML Model Predicted Trust Score: {trust_score}")
         else:
             # Fallback if model failed to load
             ratio = (total_credits / (total_credits + total_debits)) if (total_credits + total_debits) > 0 else 0
             trust_score = min(100, max(15, round(ratio * 70 + 15)))
-            print(f"⚠️ Using fallback trust score: {trust_score}")
+            print(f"WARNING Using fallback trust score: {trust_score}")
 
         return {
             "income": round(total_credits, 2),
@@ -585,7 +578,7 @@ async def verify_emergency(file: UploadFile = File(...)):
         filename = file.filename or "unknown"
         content_type = file.content_type or ""
 
-        print(f"\n🚨 Emergency doc received: {filename} ({content_type}, {len(contents)} bytes)")
+        print(f"\n[ALERT] Emergency doc received: {filename} ({content_type}, {len(contents)} bytes)")
 
         # Extract text content based on file type
         doc_text = ""
@@ -638,9 +631,9 @@ async def verify_emergency(file: UploadFile = File(...)):
                     max_tokens=1500,
                 )
                 doc_text = vision_resp.choices[0].message.content.strip()
-                print(f"👁️ Vision OCR result: {doc_text[:300]}...")
+                print(f"[VISION] Vision OCR result: {doc_text[:300]}...")
             except Exception as ve:
-                print(f"⚠️ Vision model error: {ve}")
+                print(f"[WARNING] Vision model error: {ve}")
                 doc_text = "[Image could not be processed]"
         else:
             doc_text = contents.decode("utf-8", errors="replace")
@@ -681,7 +674,7 @@ IMPORTANT: Be thorough but fair. Only reject if clearly fake or not an emergency
         )
 
         raw_resp = verify_resp.choices[0].message.content.strip()
-        print(f"🧠 Groq verification response: {raw_resp}")
+        print(f"[AI] Groq verification response: {raw_resp}")
 
         # Parse JSON
         import json, re

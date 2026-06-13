@@ -8,6 +8,12 @@ const axios = require('axios');
 const FormData = require('form-data');
 const EmergencyRecord = require('../models/EmergencyRecord');
 
+// ── Service URLs (configurable via .env) ─────────────────────────────────────
+// Flask ML Prediction server (all_models/server.py) — runs separately on 5050
+const ML_SERVER_URL = process.env.ML_SERVER_URL || 'http://127.0.0.1:5050';
+// FastAPI AI Oracle (app/main.py via run.py) — runs separately on 8000
+const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000';
+
 
 // Create a new pool
 exports.createPool = async (req, res) => {
@@ -379,7 +385,7 @@ exports.initDemoPool = async (req, res) => {
         
         // Read test users depending on mode
         const filename = isDynamic ? 'chitx_random_users_test.csv' : 'chitx_test_users.csv';
-        const csvPath = path.join(__dirname, '../../', filename);
+        const csvPath = path.join(__dirname, '../', filename);
 
         // For emergency mode, randomly pick 2 user indices to flag
         const emergencyIndices = isEmergencyMode
@@ -439,17 +445,17 @@ exports.initDemoPool = async (req, res) => {
             }
 
             let pScore = 0;
-            // Fetch from AI model. 
+            // Fetch from Flask ML prediction server (all_models/server.py on port 5050)
             try {
-                const mlRes = await axios.post('http://127.0.0.1:5050/predict', payload);
+                const mlRes = await axios.post(`${ML_SERVER_URL}/predict`, payload);
                 if (mlRes.data && mlRes.data.priority_pct !== undefined) {
                     pScore = mlRes.data.priority_pct;
                 } else {
-                    throw new Error("Invalid response from ML server");
+                    throw new Error('Invalid response from ML server');
                 }
             } catch (mlErr) {
                 console.error(`ML Predict error for ${cols[0]}:`, mlErr.message);
-                return res.status(503).json({ error: `AI Prediction Server is offline or failed for ${cols[0]}. Please start server.py on port 5050.` });
+                return res.status(503).json({ error: `AI Prediction Server (all_models/server.py) is offline. Start it with: python all_models/server.py  (runs on port 5050)` });
             }
 
             const dummyWallet = cols[0]; // e.g., USR001
@@ -654,7 +660,8 @@ exports.triggerEmergency = async (req, res) => {
         let groqApproved = false;
         let groqResult = {};
         try {
-            const verifyRes = await axios.post('http://127.0.0.1:8000/ai/verify-emergency', formData, {
+            // FastAPI AI Oracle (run.py → app/routes/emergency.py on port 8000)
+            const verifyRes = await axios.post(`${AI_SERVICE_URL}/ai/verify-emergency`, formData, {
                 headers: { ...formData.getHeaders() },
                 timeout: 30000
             });
@@ -663,9 +670,7 @@ exports.triggerEmergency = async (req, res) => {
             console.log(`🧠 Groq emergency verification: approved=${groqApproved}, reason=${groqResult.reason}`);
         } catch (groqErr) {
             console.error('Groq verification error:', groqErr.message);
-            // Even if AI service is down, we can log the attempt as PENDING/ERROR if we want, 
-            // but for now we return 503 as it's a hard dependency.
-            return res.status(503).json({ error: 'AI Emergency Verification Service (app.py:8000) is offline.' });
+            return res.status(503).json({ error: 'AI Emergency Verification Service is offline. Start it with: venv\\Scripts\\python run.py  (port 8000)' });
         }
 
         // ──────────────────────────────────────────────────
@@ -755,17 +760,17 @@ exports.triggerEmergency = async (req, res) => {
             };
         }
 
-        // Call the real ML model
+        // Flask ML server (all_models/server.py on port 5050) — reprioritise after emergency approval
         let newScore = pool.contributions[contribIndex].priorityScore;
         try {
-            const mlRes = await axios.post('http://127.0.0.1:5050/predict', payload);
+            const mlRes = await axios.post(`${ML_SERVER_URL}/predict`, payload);
             if (mlRes.data && mlRes.data.priority_pct !== undefined) {
                 newScore = mlRes.data.priority_pct;
             }
         } catch (mlErr) {
-            console.error('ML Emergency Error:', mlErr.message);
-            // If ML fails but AI approved, we still flag it but keep old score or slight boost
-            newScore = Math.min(100, newScore + 10); 
+            console.error('ML Emergency repriority error:', mlErr.message);
+            // ML is non-blocking for emergency: if offline, boost score by 10 pts
+            newScore = Math.min(100, newScore + 10);
         }
 
         pool.contributions[contribIndex].priorityScore = newScore;

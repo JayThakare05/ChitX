@@ -87,7 +87,7 @@ const EmergencyFund = () => {
              </div>
            </div>
            <p className="text-slate-400 font-medium max-w-xl text-[17px] leading-relaxed">
-             View your emergency requests, AI review results, and uploaded documents — all stored <span className="text-[#134e4a] font-semibold">securely on the blockchain</span>.
+             View your emergency requests, AI review results, and uploaded documents ï¿½ all stored <span className="text-[#134e4a] font-semibold">securely on the blockchain</span>.
            </p>
         </div>
 
