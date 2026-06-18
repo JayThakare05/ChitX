@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { Layers, LogOut, ShieldAlert, Award, Clock, Users, ArrowRight, CheckCircle2, AlertCircle, BrainCircuit, Upload, FileText, X } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Layers, LogOut, ShieldAlert, Award, Clock, Users, ArrowRight, CheckCircle2, AlertCircle, BrainCircuit, Upload, FileText, X, Shuffle, Zap } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAccount, useWriteContract, useSwitchChain, useWaitForTransactionReceipt } from 'wagmi';
 import { sepolia } from 'wagmi/chains';
@@ -27,15 +27,40 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
   const [joinStep, setJoinStep] = useState(''); // '', 'wallet', 'backend'
   const [showEligibility, setShowEligibility] = useState(false);
   const [eligibilityChecks, setEligibilityChecks] = useState([]);
+  // For dynamic contribution pools — member sets their own amount
+  const [customMonthlyPay, setCustomMonthlyPay] = useState('');
 
   const userStr = localStorage.getItem('chitx_user');
   const userWallet = userStr ? JSON.parse(userStr).walletAddress?.toLowerCase() : null;
   const isAlreadyJoined = pool.joinedMembers && userWallet && pool.joinedMembers.includes(userWallet);
+  const isDynamicContribution = pool.contributionStyle === 'DYNAMIC';
+  const isDynamicMembership = pool.membershipType === 'DYNAMIC';
+  const isRandomPool = pool.poolType === 'RANDOM';
+
+  const effectiveFixedDeposit = isDynamicContribution
+    ? (Number(customMonthlyPay) || 0) * 2
+    : fixedDeposit;
 
   const myContribution = pool.contributions && userWallet
     ? pool.contributions.find(c => c.walletAddress === userWallet)
     : null;
   const canLeave = isAlreadyJoined && myContribution && myContribution.monthlyPayments === 0;
+
+  // Joining deadline countdown
+  const [deadlineStr, setDeadlineStr] = useState('');
+  useEffect(() => {
+    if (!pool.joinDeadline) return;
+    const update = () => {
+      const diff = new Date(pool.joinDeadline) - Date.now();
+      if (diff <= 0) { setDeadlineStr('Closed'); return; }
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hrs  = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      setDeadlineStr(days > 0 ? `${days}d ${hrs}h left` : `${hrs}h left`);
+    };
+    update();
+    const t = setInterval(update, 60000);
+    return () => clearInterval(t);
+  }, [pool.joinDeadline]);
 
   const [ctxBalance, setCtxBalance] = useState(null);
 
@@ -56,12 +81,18 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
   const openJoinConfirm = async (e) => {
     e.stopPropagation();
 
+    // For dynamic contribution pools, check if user has entered their amount
+    if (isDynamicContribution && (!customMonthlyPay || Number(customMonthlyPay) <= 0)) {
+      return; // The input is shown inline, wait for them to fill it
+    }
+
     // ── Read stored user data ──────────────────────────────────
     const userData = userStr ? JSON.parse(userStr) : {};
     const trustScore       = Number(userData.trustScore   ?? 0);
     const income           = Number(userData.income        ?? 0);
     const expenses         = Number(userData.expenses      ?? 0);
     const disposable       = income - expenses;
+    const effectiveMonthlyPay = isDynamicContribution ? Number(customMonthlyPay) : monthlyPay;
 
     // ── Fetch live CTX balance ────────────────────────────────
     let balance = 0;
@@ -75,11 +106,12 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
     } catch { /* network error — leave balance at 0 */ }
 
     // ── Build checks ──────────────────────────────────────────
-    const isMicroPool  = monthlyPay >= 5 && monthlyPay <= 10;
+    const isMicroPool  = effectiveMonthlyPay >= 5 && effectiveMonthlyPay <= 10;
     const isLowTrust   = trustScore < 50;
+    const depositRequired = effectiveMonthlyPay * 2;
 
-    const incomeOk     = disposable >= monthlyPay;
-    const balanceOk    = balance    >= fixedDeposit;
+    const incomeOk     = disposable >= effectiveMonthlyPay;
+    const balanceOk    = balance    >= depositRequired;
     
     // Low trust users can join micro-pools IF balance is OK.
     // For larger pools, low trust is a hard fail for that check.
@@ -102,24 +134,24 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
         value:  `${trustScore} / 100`,
         passed: trustPassed,
         hint:   trustHint,
-        isHardRequirement: isLowTrust && !isMicroPool, // Tag for modal
+        isHardRequirement: isLowTrust && !isMicroPool,
       },
       {
         label:  'Disposable Income',
         value:  `$${disposable.toLocaleString()} / mo`,
         passed: incomeOk,
         hint:   incomeOk
-          ? `You have \$${disposable.toLocaleString()} free after expenses — enough to cover the \$${monthlyPay} monthly pay.`
-          : `Your disposable income (\$${disposable.toLocaleString()}) is less than the pool's monthly pay (\$${monthlyPay}). Reduce expenses or choose a smaller pool.`,
+          ? `You have \$${disposable.toLocaleString()} free after expenses — enough to cover the \$${effectiveMonthlyPay} monthly pay.`
+          : `Your disposable income (\$${disposable.toLocaleString()}) is less than the pool's monthly pay (\$${effectiveMonthlyPay}). Reduce expenses or choose a smaller pool.`,
       },
       {
         label:  'CTX Balance',
         value:  `${balance.toFixed(1)} CTX`,
         passed: balanceOk,
         hint:   balanceOk
-          ? `You have ${balance.toFixed(1)} CTX — sufficient for the ${fixedDeposit} CTX fixed deposit.`
-          : `You need ${fixedDeposit} CTX as a fixed deposit but only have ${balance.toFixed(1)} CTX. Earn more CTX first.`,
-        isHardRequirement: isLowTrust && isMicroPool, // Compulsory for micro-pools if low trust
+          ? `You have ${balance.toFixed(1)} CTX — sufficient for the ${depositRequired} CTX fixed deposit.`
+          : `You need ${depositRequired} CTX as a fixed deposit but only have ${balance.toFixed(1)} CTX. Earn more CTX first.`,
+        isHardRequirement: isLowTrust && isMicroPool,
       },
     ];
 
@@ -143,6 +175,9 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
     setIsJoining(true);
     setJoinStep('wallet');
 
+    const effectiveMonthlyPay = isDynamicContribution ? Number(customMonthlyPay) : monthlyPay;
+    const depositAmount = effectiveMonthlyPay * 2;
+
     try {
       // Step 0: Ensure we are on the Sepolia network
       if (chainId !== sepolia.id) {
@@ -157,7 +192,7 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
       }
 
       // Step 1: On-chain CTX transfer via MetaMask
-      const amountWei = parseEther(fixedDeposit.toString());
+      const amountWei = parseEther(depositAmount.toString());
       
       let txHash;
       try {
@@ -167,10 +202,9 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
           functionName: 'transfer',
           args: [TREASURY_ADDRESS, amountWei],
           chainId: sepolia.id,
-          gas: 100000n, // Bypass bugged RPC gas estimation
+          gas: 100000n,
         });
       } catch (walletErr) {
-        // User rejected or MetaMask error
         const msg = walletErr?.shortMessage || walletErr?.message || 'MetaMask transaction rejected.';
         showResult(false, 'Transaction Cancelled', msg);
         setIsJoining(false);
@@ -183,7 +217,12 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
       const res = await fetch(`http://localhost:5000/api/pools/${pool.id || pool._id}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ walletAddress: userWallet, txHash })
+        body: JSON.stringify({
+          walletAddress: userWallet,
+          txHash,
+          // For dynamic pools, send the chosen contribution amount
+          ...(isDynamicContribution && { customMonthlyPay: effectiveMonthlyPay })
+        })
       });
       const data = await res.json();
       
@@ -193,8 +232,10 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
         const stored = JSON.parse(localStorage.getItem('chitx_user') || '{}');
         stored.airdropAmount = data.remainingBalance || data.onChainBalance;
         localStorage.setItem('chitx_user', JSON.stringify(stored));
-        showResult(true, 'Pool Joined!', data.message || 'Successfully joined the pool!', [
-          { label: 'Deducted', value: `${fixedDeposit} CTX` },
+        const activatedMsg = data.poolActivated ? ' 🚀 Pool is now ACTIVE — cycle has started!' : '';
+        showResult(true, 'Pool Joined!', (data.message || 'Successfully joined the pool!') + activatedMsg, [
+          { label: 'Monthly Contribution', value: `$${effectiveMonthlyPay.toLocaleString()}` },
+          { label: 'Fixed Deposit Deducted', value: `${depositAmount} CTX` },
           { label: 'Tx Hash', value: txHash ? `${txHash.slice(0, 10)}...${txHash.slice(-6)}` : 'Confirmed' },
           { label: 'Remaining Balance', value: `${data.remainingBalance || data.onChainBalance || '—'} CTX` }
         ]);
@@ -291,7 +332,10 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
 
   // Joining state text
   const getJoinButtonText = () => {
-    if (!isJoining) return `Join Pool (${fixedDeposit} CTX)`;
+    if (!isJoining) {
+      if (isDynamicContribution) return `Join with $${customMonthlyPay || '?'}/mo`;
+      return `Join Pool (${fixedDeposit} CTX)`;
+    }
     if (joinStep === 'wallet') return 'Confirm in MetaMask...';
     if (joinStep === 'backend') return 'Registering...';
     return 'Processing...';
@@ -306,23 +350,47 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
           <div className="absolute inset-0 w-full h-full bg-white rounded-3xl p-7 border border-slate-100 flex flex-col justify-between [backface-visibility:hidden]">
             <div className="flex justify-between items-start">
               <div className="w-14 h-14 rounded-2xl bg-teal-50 text-teal-600 flex items-center justify-center border border-teal-100/50">
-                <Layers size={24} />
+                {isRandomPool ? <Shuffle size={24} /> : <Layers size={24} />}
               </div>
-              <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border ${
-                isAlreadyJoined 
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-100' 
-                  : 'bg-teal-50 text-teal-700 border-teal-100'
-              }`}>
-                {isAlreadyJoined ? 'JOINED' : (pool.status || 'AVAILABLE')}
-              </span>
+              <div className="flex flex-col items-end gap-1">
+                {/* Real pool status — always shown */}
+                <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border ${
+                  pool.status === 'ACTIVE' ? 'bg-green-50 text-green-700 border-green-200 animate-pulse' :
+                  pool.status === 'CLOSED' ? 'bg-slate-100 text-slate-500 border-slate-200' :
+                  pool.status === 'EXPIRED' ? 'bg-red-50 text-red-500 border-red-100' :
+                  'bg-teal-50 text-teal-700 border-teal-100'
+                }`}>
+                  {pool.status === 'ACTIVE' ? '🟢 ACTIVE' : (pool.status || 'OPEN')}
+                </span>
+                {/* Joined indicator */}
+                {isAlreadyJoined && (
+                  <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-100">
+                    ✓ Joined
+                  </span>
+                )}
+                {/* Pool type badge */}
+                <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
+                  isRandomPool ? 'bg-purple-50 text-purple-600 border border-purple-100' : 'bg-blue-50 text-blue-600 border border-blue-100'
+                }`}>
+                  {isRandomPool ? '🎲 Random' : '🤖 AI Priority'}
+                </span>
+              </div>
             </div>
             
             <div>
-              <h4 className="text-3xl font-black text-slate-800 tracking-tight">${monthlyPay.toLocaleString()} <span className="text-sm font-bold text-slate-400">/ mo</span></h4>
-              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mt-2 flex items-center gap-2">
-                <span className="inline-block w-2 h-2 rounded-full bg-teal-400"></span>
-                {members ? `${members} Members • ${members} Months` : 'Dynamic Pool'}
-              </p>
+              <h4 className="text-3xl font-black text-slate-800 tracking-tight">
+                {isDynamicContribution ? 'Dynamic' : `$${monthlyPay.toLocaleString()}`}
+                {!isDynamicContribution && <span className="text-sm font-bold text-slate-400"> / mo</span>}
+              </h4>
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                  <span className="inline-block w-2 h-2 rounded-full bg-teal-400"></span>
+                  {isDynamicMembership ? `Dynamic Pool` : (members ? `${members} Members` : 'Open Pool')}
+                </p>
+                {isDynamicContribution && (
+                  <span className="text-[9px] font-black bg-amber-50 text-amber-600 border border-amber-100 px-1.5 py-0.5 rounded uppercase tracking-widest">Dynamic Contrib.</span>
+                )}
+              </div>
             </div>
 
             {/* Pool fill progress */}
@@ -334,6 +402,12 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
               <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
                 <div className="h-full bg-teal-500 rounded-full transition-all duration-500" style={{ width: `${fillPercent}%` }}></div>
               </div>
+              {/* Joining deadline */}
+              {deadlineStr && pool.status === 'OPEN' && (
+                <p className="text-[9px] font-bold text-amber-500 uppercase tracking-widest mt-1.5 flex items-center gap-1">
+                  <Clock size={9} /> {deadlineStr} to join
+                </p>
+              )}
             </div>
             
             <div className="flex items-center gap-2 text-slate-400 text-sm font-medium">
@@ -347,22 +421,55 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
           <div className="absolute inset-0 w-full h-full bg-[#134e4a] rounded-3xl p-7 flex flex-col justify-between [backface-visibility:hidden] [transform:rotateY(180deg)] text-white shadow-xl shadow-[#134e4a]/30">
             <div>
               <h4 className="text-[10px] font-extrabold text-[#1aa08c] uppercase tracking-widest mb-1">Total Pool Output</h4>
-              <div className="text-3xl font-black text-white">{members ? `$${totalAmount.toLocaleString()}` : 'Dynamic'}</div>
+              <div className="text-3xl font-black text-white">{isDynamicContribution ? 'Dynamic' : (members ? `$${totalAmount.toLocaleString()}` : 'Dynamic')}</div>
+              {/* Pool type + contribution badges */}
+              <div className="flex gap-2 mt-2 flex-wrap">
+                <span className="text-[9px] font-black px-2 py-0.5 rounded bg-white/10 text-white/70 uppercase tracking-widest">
+                  {isRandomPool ? '🎲 Random' : '🤖 AI Priority'}
+                </span>
+                <span className="text-[9px] font-black px-2 py-0.5 rounded bg-white/10 text-white/70 uppercase tracking-widest">
+                  {isDynamicContribution ? 'Dynamic Contrib.' : 'Fixed Contrib.'}
+                </span>
+                <span className="text-[9px] font-black px-2 py-0.5 rounded bg-white/10 text-white/70 uppercase tracking-widest">
+                  {isDynamicMembership ? 'Dynamic Members' : 'Fixed Members'}
+                </span>
+              </div>
             </div>
             
             <div className="space-y-2.5 bg-white/5 rounded-2xl p-3.5 border border-white/10">
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-[#1aa08c] font-bold uppercase tracking-widest text-[10px]">Monthly Pay</span>
-                <span className="font-black text-white">${monthlyPay.toLocaleString()}</span>
-              </div>
+              {!isDynamicContribution && (
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-[#1aa08c] font-bold uppercase tracking-widest text-[10px]">Monthly Pay</span>
+                  <span className="font-black text-white">${monthlyPay.toLocaleString()}</span>
+                </div>
+              )}
+              {isDynamicContribution && !isAlreadyJoined && (
+                <div>
+                  <span className="text-[#1aa08c] font-bold uppercase tracking-widest text-[10px] block mb-1.5">Your Monthly Contribution</span>
+                  <input
+                    type="number"
+                    placeholder="Enter amount..."
+                    value={customMonthlyPay}
+                    onChange={e => setCustomMonthlyPay(e.target.value)}
+                    onClick={e => e.stopPropagation()}
+                    className="w-full bg-white/10 text-white placeholder:text-white/30 border border-white/20 rounded-xl px-3 py-2 text-sm font-bold outline-none focus:border-[#1aa08c] focus:bg-white/15 transition-all"
+                    min="1"
+                  />
+                  {customMonthlyPay > 0 && (
+                    <p className="text-[10px] text-white/50 font-bold mt-1">Fixed deposit: {Number(customMonthlyPay) * 2} CTX</p>
+                  )}
+                </div>
+              )}
               <div className="flex justify-between items-center text-sm">
                 <span className="text-[#1aa08c] font-bold uppercase tracking-widest text-[10px]">Members</span>
-                <span className="font-black text-white">{members || 'Any'}</span>
+                <span className="font-black text-white">{isDynamicMembership ? `Dynamic (min ${pool.minMembersForDynamic || 3})` : (members || 'Any')}</span>
               </div>
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-[#1aa08c] font-bold uppercase tracking-widest text-[10px]">Fixed Deposit</span>
-                <span className="font-black text-white">{fixedDeposit} CTX</span>
-              </div>
+              {!isDynamicContribution && (
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-[#1aa08c] font-bold uppercase tracking-widest text-[10px]">Fixed Deposit</span>
+                  <span className="font-black text-white">{fixedDeposit} CTX</span>
+                </div>
+              )}
               {isAlreadyJoined && myContribution && (
                 <div className="flex justify-between items-center text-sm border-t border-white/10 pt-2.5">
                   <span className="text-[#1aa08c] font-bold uppercase tracking-widest text-[10px]">Your Contribution</span>
@@ -375,11 +482,21 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
                   <span className="font-black text-amber-100">{pool.poolTreasury} CTX</span>
                 </div>
               )}
+              {deadlineStr && pool.status === 'OPEN' && (
+                <div className="flex justify-between items-center text-sm border-t border-white/10 pt-2.5">
+                  <span className="text-amber-400 font-bold uppercase tracking-widest text-[10px] flex items-center gap-1"><Clock size={9} /> Join Deadline</span>
+                  <span className="font-black text-amber-200 text-[11px]">{deadlineStr}</span>
+                </div>
+              )}
             </div>
             
             <div className="flex gap-2">
               {!isAlreadyJoined ? (
-                <button onClick={openJoinConfirm} disabled={isJoining} className="w-full py-2.5 bg-white text-[#134e4a] rounded-xl font-bold text-sm hover:bg-[#f4fcf9] transition-colors shadow-inner flex justify-center items-center disabled:opacity-70 active:scale-95">
+                <button
+                  onClick={openJoinConfirm}
+                  disabled={isJoining || (isDynamicContribution && (!customMonthlyPay || Number(customMonthlyPay) <= 0))}
+                  className="w-full py-2.5 bg-white text-[#134e4a] rounded-xl font-bold text-sm hover:bg-[#f4fcf9] transition-colors shadow-inner flex justify-center items-center disabled:opacity-50 active:scale-95"
+                >
                   {getJoinButtonText()}
                 </button>
               ) : canLeave ? (
@@ -657,10 +774,12 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
         title="Join This Pool?"
         description="MetaMask will prompt you to transfer CTX tokens as a fixed deposit. You can leave and get a full refund only before making your first monthly payment."
         details={[
-          { label: 'Monthly Pay', value: `$${monthlyPay.toLocaleString()}` },
-          { label: 'Fixed Deposit', value: `${fixedDeposit} CTX` },
+          { label: 'Pool Type', value: isRandomPool ? '🎲 Random Lottery' : '🤖 AI Priority' },
+          { label: 'Contribution Style', value: isDynamicContribution ? 'Dynamic' : 'Fixed' },
+          { label: 'Monthly Pay', value: isDynamicContribution ? `$${customMonthlyPay}/mo (your amount)` : `$${monthlyPay.toLocaleString()}` },
+          { label: 'Fixed Deposit', value: `${effectiveFixedDeposit} CTX` },
           { label: 'Your CTX Balance', value: ctxBalance !== null ? `${ctxBalance} CTX` : 'Loading...' },
-          { label: 'Pool Type', value: members ? `${members} Members` : 'Dynamic' },
+          { label: 'Membership', value: members ? `${members} Members` : 'Dynamic' },
         ]}
         confirmText="Approve in MetaMask"
       />

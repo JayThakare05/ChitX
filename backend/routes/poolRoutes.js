@@ -29,6 +29,10 @@ router.delete('/:id', poolController.deletePool);
 router.post('/:id/join', poolController.joinPool);
 router.post('/:id/leave', poolController.leavePool);
 router.get('/balance/:walletAddress', poolController.getUserBalance);
+// Debug: inspect pool state + payout history
+router.get('/:id/debug', poolController.debugPool);
+// Force-activate a pool (for testing when auto-activation didn't fire)
+router.post('/:id/force-activate', poolController.forceActivatePool);
 
 // Dynamic Pool Routes
 router.post('/bifurcate', queueController.bifurcateQueue);

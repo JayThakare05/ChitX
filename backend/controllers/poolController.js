@@ -1,4 +1,5 @@
 const Pool = require('../models/Pool');
+const { CYCLE_DURATION_MS, JOIN_WINDOW_MS } = require('../config/poolConfig');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const web3Service = require('../services/web3Service');
@@ -18,27 +19,60 @@ const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000';
 // Create a new pool
 exports.createPool = async (req, res) => {
     try {
-        const { monthlyPay, members, creatorWallet, status, isCreatorJoining, txHash } = req.body;
-        if (!monthlyPay) {
-            return res.status(400).json({ error: 'monthlyPay is required' });
-        }
-        
-        let totalAmount = 0;
-        if (members) {
-            totalAmount = monthlyPay * members;
+        const {
+            monthlyPay, members, creatorWallet, status, isCreatorJoining, txHash,
+            // ── New pool configuration fields ────────────────────────────────
+            poolType,          // 'RANDOM' | 'PRIORITY'  (default: 'PRIORITY')
+            contributionStyle, // 'FIXED'  | 'DYNAMIC'   (default: 'FIXED')
+            membershipType,    // 'FIXED'  | 'DYNAMIC'   (default: 'FIXED')
+            minMembersForDynamic // number, only relevant when membershipType = 'DYNAMIC'
+        } = req.body;
+
+        if (!monthlyPay && contributionStyle !== 'DYNAMIC') {
+            return res.status(400).json({ error: 'monthlyPay is required for fixed contribution pools' });
         }
 
+        // Enforce AI Priority pool limit — creator counts as joining
+        if ((poolType || 'PRIORITY') === 'PRIORITY' && isCreatorJoining && creatorWallet) {
+            const existingPriorityPools = await Pool.find({
+                poolType: 'PRIORITY',
+                status: { $in: ['OPEN', 'ACTIVE'] },
+                joinedMembers: creatorWallet.toLowerCase()
+            });
+            if (existingPriorityPools.length >= 2) {
+                return res.status(403).json({
+                    error: 'You are already a member of 2 AI Priority pools. You cannot join more than 2 Priority pools at a time.'
+                });
+            }
+        }
+
+        const effectiveMonthlyPay = monthlyPay || 0;
+        let totalAmount = 0;
+        if (members && effectiveMonthlyPay) {
+            totalAmount = effectiveMonthlyPay * members;
+        }
+
+        // Set the joining deadline (15 days from now)
+        const joinDeadline = new Date(Date.now() + JOIN_WINDOW_MS);
+
         const newPool = new Pool({
-            monthlyPay,
+            monthlyPay: effectiveMonthlyPay,
             totalAmount,
-            members,
+            members: membershipType === 'DYNAMIC' ? null : (members || null),
             status: status || 'OPEN',
             creatorWallet: creatorWallet?.toLowerCase(),
+            // Pool type configuration
+            poolType: poolType || 'PRIORITY',
+            contributionStyle: contributionStyle || 'FIXED',
+            membershipType: membershipType || 'FIXED',
+            minMembersForDynamic: membershipType === 'DYNAMIC' ? (minMembersForDynamic || 3) : 3,
+            // Lifecycle
+            joinDeadline,
             joinedMembers: isCreatorJoining ? [creatorWallet.toLowerCase()] : [],
             contributions: isCreatorJoining ? [{
                 walletAddress: creatorWallet.toLowerCase(),
-                monthlyContribution: monthlyPay,
-                targetAmount: totalAmount || (monthlyPay * 10), // Default to 10 if dynamic
+                monthlyContribution: effectiveMonthlyPay,
+                targetAmount: totalAmount || (effectiveMonthlyPay * (members || 10)),
                 hasBeenPaid: false,
                 payoutMonth: 0
             }] : []
@@ -48,7 +82,7 @@ exports.createPool = async (req, res) => {
         if (isCreatorJoining) {
             const user = await User.findOne({ walletAddress: creatorWallet.toLowerCase() });
             if (user) {
-                const fixedDeposit = monthlyPay * 2;
+                const fixedDeposit = effectiveMonthlyPay * 2;
                 user.tokensIssued = Math.max(0, user.tokensIssued - fixedDeposit);
                 await user.save();
                 
@@ -58,7 +92,7 @@ exports.createPool = async (req, res) => {
                     type: 'POOL_JOIN',
                     amount: fixedDeposit,
                     direction: 'DEBIT',
-                    description: `Fixed Deposit for joining pool with ${monthlyPay} monthly pay`,
+                    description: `Fixed Deposit for joining pool with ${effectiveMonthlyPay} monthly pay`,
                     poolId: newPool._id,
                     status: 'SUCCESS',
                     txHash: txHash || 'pending'
@@ -68,7 +102,11 @@ exports.createPool = async (req, res) => {
         }
 
         await newPool.save();
-        res.status(201).json({ message: 'Pool created successfully', pool: newPool });
+        res.status(201).json({
+            message: 'Pool created successfully',
+            pool: newPool,
+            joinDeadline
+        });
     } catch (error) {
         console.error('Error creating pool:', error);
         res.status(500).json({ error: 'Server error' });
@@ -130,7 +168,7 @@ exports.deletePool = async (req, res) => {
 exports.joinPool = async (req, res) => {
     try {
         const poolId = req.params.id;
-        const { walletAddress } = req.body;
+        const { walletAddress, customMonthlyPay, txHash } = req.body;
         
         if (!walletAddress) {
             return res.status(400).json({ error: 'Wallet address required' });
@@ -139,21 +177,55 @@ exports.joinPool = async (req, res) => {
         const pool = await Pool.findById(poolId);
         if (!pool) return res.status(404).json({ error: 'Pool not found' });
 
+        // ── Check joining window ────────────────────────────────────────────────
+        if (pool.joinDeadline && new Date() > pool.joinDeadline) {
+            return res.status(400).json({ error: 'The joining window for this pool has closed.' });
+        }
+
+        // ── Check pool status ───────────────────────────────────────────────────
+        if (pool.status !== 'OPEN') {
+            return res.status(400).json({ error: `Pool is not open for joining (status: ${pool.status}).` });
+        }
+
         // Check if already joined
         if (pool.joinedMembers && pool.joinedMembers.includes(walletAddress.toLowerCase())) {
             return res.status(400).json({ error: 'You have already joined this pool' });
         }
 
+        // ── AI Priority pool limit (max 2 per user) ─────────────────────────────
+        if (pool.poolType === 'PRIORITY') {
+            const existingPriorityPools = await Pool.find({
+                poolType: 'PRIORITY',
+                status: { $in: ['OPEN', 'ACTIVE'] },
+                joinedMembers: walletAddress.toLowerCase()
+            });
+            if (existingPriorityPools.length >= 2) {
+                return res.status(403).json({
+                    error: 'You are already a member of 2 AI Priority pools. You cannot join more than 2 Priority pools at a time.'
+                });
+            }
+        }
+
         const user = await User.findOne({ walletAddress: walletAddress.toLowerCase() });
-        
         if (!user) {
             return res.status(404).json({ error: 'User not found in system. Please register.' });
         }
 
+        // ── Determine this member's contribution amount ──────────────────────────
+        // DYNAMIC pools: member provides their own amount; FIXED pools: use pool's monthlyPay
+        let memberMonthlyPay = pool.monthlyPay;
+        if (pool.contributionStyle === 'DYNAMIC') {
+            if (!customMonthlyPay || customMonthlyPay <= 0) {
+                return res.status(400).json({ error: 'Please specify your monthly contribution amount for this dynamic pool.' });
+            }
+            memberMonthlyPay = Number(customMonthlyPay);
+        }
+
+        const fixedDeposit = memberMonthlyPay * 2;
+
         // ── Eligibility Logic (Synchronized with Frontend) ────────────────────────
         const disposable = user.income - user.expenses;
-        const fixedDeposit = pool.monthlyPay * 2;
-        const isMicroPool  = pool.monthlyPay >= 5 && pool.monthlyPay <= 10;
+        const isMicroPool  = memberMonthlyPay >= 5 && memberMonthlyPay <= 10;
         const isLowTrust   = user.trustScore < 50;
 
         // Check on-chain CTX balance
@@ -162,7 +234,7 @@ exports.joinPool = async (req, res) => {
         onChainBalance = parseFloat(balanceResult.balance) || 0;
         console.log(`💰 On-chain CTX balance for ${walletAddress}: ${onChainBalance}`);
 
-        const incomeOk  = disposable >= pool.monthlyPay;
+        const incomeOk  = disposable >= memberMonthlyPay;
         const balanceOk = onChainBalance >= fixedDeposit;
         
         // Low trust users can join micro-pools IF balance is OK.
@@ -188,7 +260,7 @@ exports.joinPool = async (req, res) => {
         if (passedCount < 2) {
             const reasons = [];
             if (!trustOk)   reasons.push(`Trust score too low (${user.trustScore}/100, min 50)`);
-            if (!incomeOk)  reasons.push(`Disposable income ($${disposable}) is less than monthly pay ($${pool.monthlyPay})`);
+            if (!incomeOk)  reasons.push(`Disposable income ($${disposable}) is less than monthly pay ($${memberMonthlyPay})`);
             if (!balanceOk) reasons.push(`CTX balance (${onChainBalance.toFixed(1)}) is less than required deposit (${fixedDeposit})`);
             
             return res.status(403).json({
@@ -196,8 +268,8 @@ exports.joinPool = async (req, res) => {
             });
         }
 
-        // Check if pool is full
-        if (pool.members && pool.joinedMembers && pool.joinedMembers.length >= pool.members) {
+        // Check if FIXED membership pool is already full
+        if (pool.membershipType !== 'DYNAMIC' && pool.members && pool.joinedMembers && pool.joinedMembers.length >= pool.members) {
             return res.status(400).json({ error: 'Pool is full.' });
         }
 
@@ -210,11 +282,16 @@ exports.joinPool = async (req, res) => {
         pool.joinedMembers.push(walletAddress.toLowerCase());
 
         if (!pool.contributions) pool.contributions = [];
+        // For DYNAMIC contribution, the targetAmount is calculated proportionally when cycle starts
+        // For FIXED, it's simply monthlyPay * totalMembers
+        const effectiveMembers = pool.members || pool.joinedMembers.length + 1;
         pool.contributions.push({
             walletAddress: walletAddress.toLowerCase(),
             fixedDeposit: fixedDeposit,
-            monthlyContribution: pool.monthlyPay,
-            targetAmount: pool.monthlyPay * pool.members,
+            monthlyContribution: memberMonthlyPay,
+            targetAmount: pool.contributionStyle === 'FIXED'
+                ? (memberMonthlyPay * (pool.members || effectiveMembers))
+                : 0, // Will be recalculated when cycle starts for DYNAMIC
             priorityScore: 50, // Default for actual metamask joins, boosted if they trigger emergency
             monthlyPayments: 0,
             hasBeenPaid: false,
@@ -223,6 +300,40 @@ exports.joinPool = async (req, res) => {
         });
 
         pool.poolTreasury = (pool.poolTreasury || 0) + fixedDeposit;
+
+        // ── Auto-activate when pool reaches capacity ────────────────────────────
+        const nowJoined = pool.joinedMembers.length;
+        let poolActivated = false;
+
+        const shouldActivate = pool.membershipType === 'FIXED'
+            ? (pool.members && nowJoined >= pool.members)  // Fixed: full when member cap reached
+            : (nowJoined >= (pool.minMembersForDynamic || 3)); // Dynamic: full when min reached
+
+        if (shouldActivate && pool.status === 'OPEN') {
+            const now = new Date();
+            pool.status = 'ACTIVE';
+            pool.cycleStartedAt = now;
+            pool.nextPayoutAt = new Date(now.getTime() + CYCLE_DURATION_MS);
+
+            // Calculate total monthly collection for cycle payouts
+            pool.totalMonthlyCollection = pool.contributions.reduce(
+                (acc, c) => acc + (c.monthlyContribution || 0), 0
+            );
+
+            // For DYNAMIC contribution pools — calculate proportional target amounts now
+            if (pool.contributionStyle === 'DYNAMIC') {
+                const totalMonthly = pool.totalMonthlyCollection;
+                pool.contributions.forEach(c => {
+                    // Each member receives an amount proportional to their contribution
+                    const share = totalMonthly > 0 ? c.monthlyContribution / totalMonthly : 1 / pool.contributions.length;
+                    c.targetAmount = Math.round(totalMonthly * share * pool.contributions.length * 100) / 100;
+                });
+            }
+
+            poolActivated = true;
+            console.log(`🚀 Pool ${poolId} auto-activated! ${nowJoined} members. First payout at ${pool.nextPayoutAt.toISOString()}`);
+        }
+
         await pool.save();
 
         // ── Record transaction ──────────────────────────────────────
@@ -233,9 +344,9 @@ exports.joinPool = async (req, res) => {
                 direction: 'DEBIT',
                 amount: fixedDeposit,
                 poolId: poolId,
-                poolMonthlyPay: pool.monthlyPay,
-                description: `Joined pool — ${fixedDeposit} CTX fixed deposit locked`,
-                txHash: req.body.txHash || null,
+                poolMonthlyPay: memberMonthlyPay,
+                description: `Joined ${pool.poolType} pool — ${fixedDeposit} CTX fixed deposit locked`,
+                txHash: txHash || null,
                 status: 'SUCCESS'
             });
         } catch (txErr) { console.error('Transaction record error:', txErr.message); }
@@ -246,8 +357,9 @@ exports.joinPool = async (req, res) => {
 
         console.log(`✅ ${walletAddress} joined pool ${poolId}. Fixed deposit: ${fixedDeposit} CTX deducted.`);
         res.status(200).json({ 
-            message: `Successfully joined! ${fixedDeposit} CTX fixed deposit deducted.`, 
+            message: `Successfully joined! ${fixedDeposit} CTX fixed deposit deducted.${poolActivated ? ' 🚀 Pool is now ACTIVE — cycle has started!' : ''}`, 
             pool,
+            poolActivated,
             deducted: fixedDeposit,
             remainingBalance: displayBalance.toFixed(1),
             onChainBalance: displayBalance.toFixed(1)
@@ -816,3 +928,119 @@ exports.getEmergencyHistory = async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch emergency history' });
     }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEBUG: GET /api/pools/:id/debug — show full pool state + payout history
+// ─────────────────────────────────────────────────────────────────────────────
+exports.debugPool = async (req, res) => {
+    try {
+        const pool = await Pool.findById(req.params.id);
+        if (!pool) return res.status(404).json({ error: 'Pool not found' });
+
+        // Fetch payout transactions for this pool
+        const payouts = await Transaction.find({
+            poolId: pool._id,
+            type: 'POOL_PAYOUT'
+        }).sort({ createdAt: 1 });
+
+        const refunds = await Transaction.find({
+            poolId: pool._id,
+            type: 'POOL_REFUND'
+        }).sort({ createdAt: 1 });
+
+        res.status(200).json({
+            pool: {
+                id:                 pool._id,
+                status:             pool.status,
+                poolType:           pool.poolType,
+                contributionStyle:  pool.contributionStyle,
+                membershipType:     pool.membershipType,
+                members:            pool.members,
+                minMembersForDynamic: pool.minMembersForDynamic,
+                joinedCount:        pool.joinedMembers?.length || 0,
+                joinedMembers:      pool.joinedMembers,
+                monthlyPay:         pool.monthlyPay,
+                totalMonthlyCollection: pool.totalMonthlyCollection,
+                poolTreasury:       pool.poolTreasury,
+                currentBalance:     pool.currentBalance,
+                cycleStartedAt:     pool.cycleStartedAt,
+                nextPayoutAt:       pool.nextPayoutAt,
+                joinDeadline:       pool.joinDeadline,
+                simulationMonth:    pool.simulationMonth,
+                cycleLimit:         pool.cycleLimit,
+                contributions: pool.contributions.map(c => ({
+                    wallet:              c.walletAddress?.slice(0, 10) + '...',
+                    monthlyContribution: c.monthlyContribution,
+                    targetAmount:        c.targetAmount,
+                    fixedDeposit:        c.fixedDeposit,
+                    hasBeenPaid:         c.hasBeenPaid,
+                    payoutMonth:         c.payoutMonth,
+                    priorityScore:       c.priorityScore,
+                }))
+            },
+            payouts,
+            refunds,
+            summary: {
+                totalPaidOut:   payouts.reduce((s, t) => s + t.amount, 0),
+                totalRefunded:  refunds.reduce((s, t) => s + t.amount, 0),
+                payoutCount:    payouts.length,
+            }
+        });
+    } catch (err) {
+        console.error('Debug pool error:', err);
+        res.status(500).json({ error: 'Failed to debug pool: ' + err.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FORCE ACTIVATE: POST /api/pools/:id/force-activate
+// Manually activates an OPEN pool that is already full (testing helper)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.forceActivatePool = async (req, res) => {
+    try {
+        const pool = await Pool.findById(req.params.id);
+        if (!pool) return res.status(404).json({ error: 'Pool not found' });
+        if (pool.status !== 'OPEN') return res.status(400).json({ error: `Pool is already ${pool.status} — only OPEN pools can be activated.` });
+        if (!pool.joinedMembers || pool.joinedMembers.length === 0) {
+            return res.status(400).json({ error: 'No members have joined yet.' });
+        }
+
+        const now = new Date();
+        pool.status         = 'ACTIVE';
+        pool.cycleStartedAt = now;
+        pool.nextPayoutAt   = new Date(now.getTime() + CYCLE_DURATION_MS);
+
+        pool.totalMonthlyCollection = pool.contributions.reduce(
+            (acc, c) => acc + (c.monthlyContribution || 0), 0
+        );
+
+        // For DYNAMIC contribution pools — set proportional target amounts
+        if (pool.contributionStyle === 'DYNAMIC') {
+            const total = pool.totalMonthlyCollection;
+            const n     = pool.contributions.length;
+            pool.contributions.forEach(c => {
+                const share = total > 0 ? (c.monthlyContribution || 0) / total : 1 / n;
+                // Target = total monthly pot × number of cycles they participate in
+                c.targetAmount = Math.round(total * n * share * 100) / 100;
+            });
+        }
+
+        await pool.save();
+
+        res.status(200).json({
+            message:    `✅ Pool force-activated! First payout in ${CYCLE_DURATION_MS / 1000} seconds.`,
+            status:     pool.status,
+            nextPayoutAt: pool.nextPayoutAt,
+            totalMonthlyCollection: pool.totalMonthlyCollection,
+            contributions: pool.contributions.map(c => ({
+                wallet:     c.walletAddress?.slice(0, 12) + '...',
+                contribution: c.monthlyContribution,
+                targetAmount: c.targetAmount,
+            }))
+        });
+    } catch (err) {
+        console.error('Force activate error:', err);
+        res.status(500).json({ error: 'Failed to force-activate: ' + err.message });
+    }
+};
+

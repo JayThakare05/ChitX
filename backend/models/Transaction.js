@@ -13,6 +13,8 @@ const TransactionSchema = new mongoose.Schema({
         enum: [
             'POOL_JOIN',       // User joined a pool (fixed deposit deducted)
             'POOL_LEAVE',      // User left a pool (fixed deposit refunded)
+            'POOL_PAYOUT',     // User received their chit fund payout (lifecycle engine)
+            'POOL_REFUND',     // Auto-refund when pool expires without filling
             'MONTHLY_PAYMENT', // User made a monthly contribution to their pool
             'CHIT_JACKPOT',    // User won a pool and received the pot
             'REFUND',          // General refund (pool deleted etc.)

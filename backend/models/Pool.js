@@ -16,13 +16,38 @@ const memberContributionSchema = new mongoose.Schema({
 }, { _id: false });
 
 const poolSchema = new mongoose.Schema({
-    monthlyPay: { type: Number, required: true }, // Base config metric
+    monthlyPay: { type: Number, required: true }, // Base config metric (0 for fully dynamic)
     totalAmount: { type: Number, required: false },
-    members: { type: Number, required: false },
-    status: { type: String, default: 'OPEN' }, // OPEN, BIFURCATING, ACTIVE, CLOSED
+    members: { type: Number, required: false }, // Null/undefined = dynamic membership
+    status: { type: String, default: 'OPEN' }, // OPEN, BIFURCATING, ACTIVE, CLOSED, EXPIRED
+
     creatorWallet: { type: String, required: false },
-    
-    // Dynamic / Simulation fields
+
+    // ── Pool Type Configuration ───────────────────────────────────────────────
+    // RANDOM  → winner each cycle picked by random lottery
+    // PRIORITY → winner picked by AI priority score (max 2 such pools per user)
+    poolType: { type: String, enum: ['RANDOM', 'PRIORITY'], default: 'PRIORITY' },
+
+    // FIXED   → all members pay the same monthlyPay
+    // DYNAMIC → each member sets their own contribution at join time
+    contributionStyle: { type: String, enum: ['FIXED', 'DYNAMIC'], default: 'FIXED' },
+
+    // FIXED   → set member cap; closes when full or joinDeadline passes
+    // DYNAMIC → no hard cap; needs minMembersForDynamic to start
+    membershipType: { type: String, enum: ['FIXED', 'DYNAMIC'], default: 'FIXED' },
+
+    // Minimum members required to auto-start a DYNAMIC membership pool
+    minMembersForDynamic: { type: Number, default: 3 },
+
+    // ── Lifecycle Timestamps ──────────────────────────────────────────────────
+    // Deadline for members to join (15 days from creation)
+    joinDeadline: { type: Date },
+    // When the pool became fully active (cycle clock starts)
+    cycleStartedAt: { type: Date },
+    // When the next scheduled payout should fire
+    nextPayoutAt: { type: Date },
+
+    // ── Dynamic / Simulation fields ───────────────────────────────────────────
     isDynamic: { type: Boolean, default: false },
     currentBalance: { type: Number, default: 0 },
     totalMonthlyCollection: { type: Number, default: 0 },
