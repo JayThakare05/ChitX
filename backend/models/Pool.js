@@ -11,8 +11,20 @@ const memberContributionSchema = new mongoose.Schema({
     priorityScore: { type: Number, default: 0 }, // Filled via AI simulation
     hasBeenPaid: { type: Boolean, default: false }, // Cycle flag
     payoutMonth: { type: Number, default: 0 }, // Which simulation month they won
+    hasPaidCurrentMonth: { type: Boolean, default: false }, // Has paid for the active cycle
+    fixedDepositRemaining: { type: Number, default: 0 }, // Deducted if they miss payment
     emergencyFlag: { type: Boolean, default: false }, // Emergency payout flag
     joinedAt: { type: Date, default: Date.now }
+}, { _id: false });
+
+const winnerRecordSchema = new mongoose.Schema({
+    walletAddress: String,
+    targetAmount: Number,
+    actualPayout: Number,
+    payoutMonth: Number,
+    isEmergency: Boolean,
+    aiReasoning: String,
+    paidAt: { type: Date, default: Date.now }
 }, { _id: false });
 
 const poolSchema = new mongoose.Schema({
@@ -56,6 +68,7 @@ const poolSchema = new mongoose.Schema({
 
     joinedMembers: [{ type: String }],
     contributions: [memberContributionSchema],
+    winnersHistory: [winnerRecordSchema],
     poolTreasury: { type: Number, default: 0 }, // total CTX held by this pool
     createdAt: { type: Date, default: Date.now }
 });

@@ -21,6 +21,7 @@
 const Pool = require('../models/Pool');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
+const web3Service = require('./web3Service');
 const { CYCLE_DURATION_MS, JOIN_WINDOW_MS } = require('../config/poolConfig');
 
 // How often the lifecycle engine polls (should be much shorter than CYCLE_DURATION_MS)
@@ -101,14 +102,15 @@ async function executePayoutCycle(pool) {
 
     // Add monthly collection to pool balance
     pool.currentBalance = (pool.currentBalance || 0) + (pool.totalMonthlyCollection || 0);
-    pool.simulationMonth = (pool.simulationMonth || 0) + 1;
 
     const winner = pickWinner(pool);
     if (!winner) {
         console.log(`[Lifecycle] Pool ${pool._id}: No eligible winner found (all paid?).`);
         // Reset cycle
         pool.contributions.forEach(c => { c.hasBeenPaid = false; });
-        pool.nextPayoutAt = new Date(Date.now() + CYCLE_DURATION_MS);
+        pool.status = 'ACTIVE'; // Back to payment phase
+        pool.paymentDeadline = new Date(Date.now() + CYCLE_DURATION_MS);
+        pool.nextPayoutAt = null;
         await pool.save();
         return;
     }
@@ -136,13 +138,16 @@ async function executePayoutCycle(pool) {
     winner.payoutMonth = pool.simulationMonth;
     pool.currentBalance = Math.max(0, pool.currentBalance - winner.targetAmount);
 
-    // Attempt to credit winner's DB balance
+    // Attempt to credit winner's DB balance and transfer Web3
     try {
         const winnerUser = await User.findOne({ walletAddress: winner.walletAddress });
         if (winnerUser) {
             winnerUser.tokensIssued = (winnerUser.tokensIssued || 0) + payoutAmount;
             await winnerUser.save();
         }
+
+        // Send tokens via Web3
+        await web3Service.transferTokens(winner.walletAddress, payoutAmount);
 
         await Transaction.create({
             walletAddress: winner.walletAddress,
@@ -161,19 +166,65 @@ async function executePayoutCycle(pool) {
 
     // Check if cycle complete
     const allPaid = pool.contributions.every(c => c.hasBeenPaid);
+    
     if (allPaid) {
         pool.contributions.forEach(c => { c.hasBeenPaid = false; });
-        pool.cycleLimit -= 1;
-        if (pool.cycleLimit <= 0) {
-            pool.status = 'CLOSED';
-            console.log(`🔒 [Lifecycle] Pool ${pool._id} completed all cycles. Closed.`);
-        } else {
-            console.log(`🔄 [Lifecycle] Pool ${pool._id} cycle reset. Cycles remaining: ${pool.cycleLimit}`);
+        pool.status = 'CLOSED';
+        console.log(`🔒 [Lifecycle] Pool ${pool._id} completed all cycles. Closed.`);
+
+        // Refund fixed deposits
+        for (const c of pool.contributions) {
+            if (c.fixedDepositRemaining > 0) {
+                try {
+                    console.log(`💸 [Lifecycle] Refunding deposit ${c.fixedDepositRemaining} CTX to ${c.walletAddress}`);
+                    // Important: wait for web3Service to process transfer sequentially to prevent nonce collisions if there are many members
+                    await web3Service.transferTokens(c.walletAddress, c.fixedDepositRemaining);
+                    
+                    await Transaction.create({
+                        walletAddress: c.walletAddress,
+                        type: 'POOL_REFUND',
+                        direction: 'CREDIT',
+                        amount: c.fixedDepositRemaining,
+                        poolId: pool._id,
+                        description: 'Pool closed — Deposit returned',
+                        status: 'SUCCESS'
+                    });
+                    
+                    c.fixedDepositRemaining = 0;
+                } catch (err) {
+                    console.error(`❌ [Lifecycle] Failed to refund ${c.walletAddress}:`, err.message);
+                }
+            }
         }
     }
 
-    // Schedule next payout
-    pool.nextPayoutAt = new Date(Date.now() + CYCLE_DURATION_MS);
+    // Add to winners history
+    if (!pool.winnersHistory) pool.winnersHistory = [];
+    pool.winnersHistory.push({
+        walletAddress: winner.walletAddress,
+        targetAmount: winner.targetAmount,
+        actualPayout: payoutAmount,
+        payoutMonth: pool.simulationMonth,
+        isEmergency: !!winner.emergencyFlag,
+        aiReasoning: 'Auto payout via lifecycle cycle ' + pool.simulationMonth,
+        paidAt: new Date()
+    });
+
+    // Increment the simulation month since a payout just finished
+    pool.simulationMonth = (pool.simulationMonth || 1) + 1;
+
+    // Reset payments for next cycle
+    pool.contributions.forEach(c => { 
+        c.hasPaidCurrentMonth = false; 
+    });
+
+    // Schedule next payment phase
+    if (pool.status !== 'CLOSED') {
+        pool.status = 'ACTIVE';
+        pool.paymentDeadline = new Date(Date.now() + CYCLE_DURATION_MS);
+        pool.nextPayoutAt = null;
+    }
+    
     await pool.save();
 }
 
@@ -184,9 +235,10 @@ async function executePayoutCycle(pool) {
 async function activatePool(pool, now = new Date()) {
     if (pool.status === 'ACTIVE') return; // Already active, skip
 
-    pool.status = 'ACTIVE';
+    pool.status = 'COUNTING_DOWN'; // since they pay 1st month on join
     pool.cycleStartedAt = now;
-    pool.nextPayoutAt = new Date(now.getTime() + CYCLE_DURATION_MS);
+    pool.paymentDeadline = null;
+    pool.nextPayoutAt = new Date(now.getTime() + 60 * 1000); // 1 min timer to first payout
     pool.totalMonthlyCollection = pool.contributions.reduce(
         (acc, c) => acc + (c.monthlyContribution || 0), 0
     );
@@ -251,14 +303,61 @@ async function runLifecycleCheck() {
             }
         }
 
-        // ── 3. Check for due payouts ─────────────────────────────────────────
+        // ── 3. Check for Payment Deadlines ───────────────────────────────────
+        const activePools = await Pool.find({ status: 'ACTIVE' });
+        for (const pool of activePools) {
+            const allPaid = pool.contributions.every(c => c.hasPaidCurrentMonth);
+            
+            if (allPaid) {
+                // Everyone paid early! Start the 1 min countdown
+                console.log(`💸 [Lifecycle] Pool ${pool._id} all members paid. Starting countdown...`);
+                pool.status = 'COUNTING_DOWN';
+                pool.paymentDeadline = null;
+                pool.nextPayoutAt = new Date(now.getTime() + 60 * 1000); // 1 min from now
+                await pool.save();
+            } else if (pool.paymentDeadline && pool.paymentDeadline <= now) {
+                // Deadline passed, deduct from missing
+                console.log(`⚠️ [Lifecycle] Pool ${pool._id} payment deadline passed. Deducting from deposits...`);
+                for (const c of pool.contributions) {
+                    if (!c.hasPaidCurrentMonth) {
+                        if (c.fixedDepositRemaining >= c.monthlyContribution) {
+                            c.fixedDepositRemaining -= c.monthlyContribution;
+                            c.hasPaidCurrentMonth = true;
+                            c.monthlyPayments += 1;
+                            c.totalContributed += c.monthlyContribution;
+                            pool.poolTreasury += c.monthlyContribution;
+                            console.log(`   -> Deducted ${c.monthlyContribution} from ${c.walletAddress} deposit.`);
+                        } else {
+                            console.log(`   -> ❌ User ${c.walletAddress} has insufficient deposit remaining!`);
+                            // For now, still mark them as paid or handle eviction (out of scope for now)
+                        }
+                    }
+                }
+                pool.status = 'COUNTING_DOWN';
+                pool.paymentDeadline = null;
+                pool.nextPayoutAt = new Date(now.getTime() + 60 * 1000); // 1 min from now
+                await pool.save();
+            }
+        }
+
+        // ── 4. Check for due payouts ─────────────────────────────────────────
+        // Use findOneAndUpdate to atomically lock the pool to prevent double payouts
         const duePools = await Pool.find({
-            status: 'ACTIVE',
+            status: 'COUNTING_DOWN',
             nextPayoutAt: { $lte: now }
         });
 
         for (const pool of duePools) {
-            await executePayoutCycle(pool);
+            // Lock the pool to PROCESSING_PAYOUT atomically
+            const lockedPool = await Pool.findOneAndUpdate(
+                { _id: pool._id, status: 'COUNTING_DOWN' },
+                { $set: { status: 'PROCESSING_PAYOUT' } },
+                { new: true }
+            );
+
+            if (lockedPool) {
+                await executePayoutCycle(lockedPool);
+            }
         }
 
     } catch (err) {

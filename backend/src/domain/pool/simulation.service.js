@@ -8,7 +8,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 
-const ML_SERVER_URL = process.env.ML_SERVER_URL || 'http://127.0.0.1:5050';
+const ML_SERVER_URL = process.env.ML_SERVER_URL || 'http://127.0.0.1:8000';
 
 // ──────────────────────────────────────────────────────────────────────────
 // INIT DEMO POOL
@@ -78,7 +78,7 @@ async function initDemoPool(mode = 'CONSTANT') {
       }
     } catch (mlErr) {
       throw Object.assign(
-        new Error(`AI Prediction Server is offline or failed for ${cols[0]}. Please start server.py on port 5050.`),
+        new Error(`AI Prediction Server is offline or failed for ${cols[0]}. Please start ai_service on port 8000.`),
         { statusCode: 503 }
       );
     }

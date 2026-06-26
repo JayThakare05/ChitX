@@ -24,14 +24,17 @@ async function fundUsers() {
             
             // Optional: Send a tiny amount of ETH for gas if Treasury has enough
             const treasuryEth = await web3Service.provider.getBalance(web3Service.treasuryWallet.address);
-            if (treasuryEth > ethers.parseEther("0.003") && ethBalance < ethers.parseEther("0.001")) {
-                console.log("Sending 0.001 Sepolia ETH for gas...");
+            console.log(`Treasury ETH Balance: ${ethers.formatEther(treasuryEth)} ETH`);
+            if (treasuryEth > ethers.parseEther("0.02") && ethBalance < ethers.parseEther("0.02")) {
+                console.log("Sending 0.01 Sepolia ETH for gas...");
                 const tx = await web3Service.treasuryWallet.sendTransaction({
                     to: address,
-                    value: ethers.parseEther("0.001")
+                    value: ethers.parseEther("0.01")
                 });
                 await tx.wait();
                 console.log("Successfully sent ETH.");
+            } else {
+                console.log("Not sending ETH (treasury low or user already has enough).");
             }
         } catch (error) {
             console.error(`Failed to fund ${address}:`, error.message);

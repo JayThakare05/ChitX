@@ -10,8 +10,8 @@ const FormData = require('form-data');
 const EmergencyRecord = require('../models/EmergencyRecord');
 
 // ── Service URLs (configurable via .env) ─────────────────────────────────────
-// Flask ML Prediction server (all_models/server.py) — runs separately on 5050
-const ML_SERVER_URL = process.env.ML_SERVER_URL || 'http://127.0.0.1:5050';
+// Flask ML Prediction server (merged into AI Service)
+const ML_SERVER_URL = process.env.ML_SERVER_URL || 'http://127.0.0.1:8000';
 // FastAPI AI Oracle (app/main.py via run.py) — runs separately on 8000
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000';
 
@@ -71,28 +71,34 @@ exports.createPool = async (req, res) => {
             joinedMembers: isCreatorJoining ? [creatorWallet.toLowerCase()] : [],
             contributions: isCreatorJoining ? [{
                 walletAddress: creatorWallet.toLowerCase(),
+                fixedDeposit: effectiveMonthlyPay * 2,
+                fixedDepositRemaining: effectiveMonthlyPay * 2,
                 monthlyContribution: effectiveMonthlyPay,
                 targetAmount: totalAmount || (effectiveMonthlyPay * (members || 10)),
                 hasBeenPaid: false,
-                payoutMonth: 0
+                payoutMonth: 0,
+                monthlyPayments: 1,
+                hasPaidCurrentMonth: true,
+                totalContributed: effectiveMonthlyPay * 3
             }] : []
         });
         
-        // If creator is joining, deduct their fixed deposit from DB profile to sync with on-chain payment
+        // If creator is joining, deduct their fixed deposit + month 1 from DB profile to sync with on-chain payment
         if (isCreatorJoining) {
             const user = await User.findOne({ walletAddress: creatorWallet.toLowerCase() });
             if (user) {
                 const fixedDeposit = effectiveMonthlyPay * 2;
-                user.tokensIssued = Math.max(0, user.tokensIssued - fixedDeposit);
+                const totalInitialDeposit = fixedDeposit + effectiveMonthlyPay;
+                user.tokensIssued = Math.max(0, user.tokensIssued - totalInitialDeposit);
                 await user.save();
                 
                 // Log transaction
                 const txn = new Transaction({
                     walletAddress: creatorWallet.toLowerCase(),
                     type: 'POOL_JOIN',
-                    amount: fixedDeposit,
+                    amount: totalInitialDeposit,
                     direction: 'DEBIT',
-                    description: `Fixed Deposit for joining pool with ${effectiveMonthlyPay} monthly pay`,
+                    description: `Initial Deposit (3x) for creating & joining pool with ${effectiveMonthlyPay} monthly pay`,
                     poolId: newPool._id,
                     status: 'SUCCESS',
                     txHash: txHash || 'pending'
@@ -222,6 +228,7 @@ exports.joinPool = async (req, res) => {
         }
 
         const fixedDeposit = memberMonthlyPay * 2;
+        const totalInitialDeposit = fixedDeposit + memberMonthlyPay; // 3x total
 
         // ── Eligibility Logic (Synchronized with Frontend) ────────────────────────
         const disposable = user.income - user.expenses;
@@ -235,7 +242,7 @@ exports.joinPool = async (req, res) => {
         console.log(`💰 On-chain CTX balance for ${walletAddress}: ${onChainBalance}`);
 
         const incomeOk  = disposable >= memberMonthlyPay;
-        const balanceOk = onChainBalance >= fixedDeposit;
+        const balanceOk = onChainBalance >= totalInitialDeposit;
         
         // Low trust users can join micro-pools IF balance is OK.
         // For larger pools, low trust is a hard fail.
@@ -250,7 +257,7 @@ exports.joinPool = async (req, res) => {
             }
             if (!balanceOk) {
                 return res.status(403).json({ 
-                    error: `For micro-pools, a sufficient CTX balance (${fixedDeposit} required) is compulsory for low-trust users.` 
+                    error: `For micro-pools, a sufficient CTX balance (${totalInitialDeposit} required) is compulsory for low-trust users.` 
                 });
             }
         }
@@ -261,7 +268,7 @@ exports.joinPool = async (req, res) => {
             const reasons = [];
             if (!trustOk)   reasons.push(`Trust score too low (${user.trustScore}/100, min 50)`);
             if (!incomeOk)  reasons.push(`Disposable income ($${disposable}) is less than monthly pay ($${memberMonthlyPay})`);
-            if (!balanceOk) reasons.push(`CTX balance (${onChainBalance.toFixed(1)}) is less than required deposit (${fixedDeposit})`);
+            if (!balanceOk) reasons.push(`CTX balance (${onChainBalance.toFixed(1)}) is less than required initial deposit (${totalInitialDeposit})`);
             
             return res.status(403).json({
                 error: `You need at least 2 of 3 eligibility criteria to join. Failed: ${reasons.join('; ')}.`
@@ -274,7 +281,7 @@ exports.joinPool = async (req, res) => {
         }
 
         // === DEDUCT from DB balance ===
-        user.tokensIssued = Math.max(0, (user.tokensIssued || 0) - fixedDeposit);
+        user.tokensIssued = Math.max(0, (user.tokensIssued || 0) - totalInitialDeposit);
         await user.save();
 
         // Add to pool
@@ -288,15 +295,17 @@ exports.joinPool = async (req, res) => {
         pool.contributions.push({
             walletAddress: walletAddress.toLowerCase(),
             fixedDeposit: fixedDeposit,
+            fixedDepositRemaining: fixedDeposit,
             monthlyContribution: memberMonthlyPay,
             targetAmount: pool.contributionStyle === 'FIXED'
                 ? (memberMonthlyPay * (pool.members || effectiveMembers))
                 : 0, // Will be recalculated when cycle starts for DYNAMIC
             priorityScore: 50, // Default for actual metamask joins, boosted if they trigger emergency
-            monthlyPayments: 0,
+            monthlyPayments: 1, // First month paid on join
+            hasPaidCurrentMonth: true, // They paid for month 1
             hasBeenPaid: false,
             payoutMonth: 0,
-            totalContributed: fixedDeposit
+            totalContributed: totalInitialDeposit
         });
 
         pool.poolTreasury = (pool.poolTreasury || 0) + fixedDeposit;
@@ -342,10 +351,10 @@ exports.joinPool = async (req, res) => {
                 walletAddress: walletAddress.toLowerCase(),
                 type: 'POOL_JOIN',
                 direction: 'DEBIT',
-                amount: fixedDeposit,
+                amount: totalInitialDeposit,
                 poolId: poolId,
                 poolMonthlyPay: memberMonthlyPay,
-                description: `Joined ${pool.poolType} pool — ${fixedDeposit} CTX fixed deposit locked`,
+                description: `Initial Deposit (3x) for joining pool with ${memberMonthlyPay} monthly pay`,
                 txHash: txHash || null,
                 status: 'SUCCESS'
             });
@@ -398,10 +407,10 @@ exports.leavePool = async (req, res) => {
             return res.status(400).json({ error: 'No contribution record found.' });
         }
 
-        // Only allow leaving if NO monthly payments made
-        if (contrib.monthlyPayments > 0) {
+        // Only allow leaving if NO additional monthly payments made and pool is still OPEN
+        if (contrib.monthlyPayments > 1 || pool.status !== 'OPEN') {
             return res.status(403).json({ 
-                error: 'You have already made monthly payments. You cannot leave the pool after the first payment.' 
+                error: 'You cannot leave an active pool or after making subsequent monthly payments.' 
             });
         }
 
@@ -459,6 +468,64 @@ exports.leavePool = async (req, res) => {
     } catch (error) {
         console.error('Error leaving pool:', error);
         res.status(500).json({ error: 'Server error' });
+    }
+};
+
+// Manually pay monthly contribution
+exports.payMonthlyContribution = async (req, res) => {
+    try {
+        const poolId = req.params.id;
+        const { walletAddress, txHash } = req.body;
+        
+        if (!walletAddress) return res.status(400).json({ error: 'Wallet address required' });
+
+        const pool = await Pool.findById(poolId);
+        if (!pool) return res.status(404).json({ error: 'Pool not found' });
+        
+        if (pool.status !== 'ACTIVE') {
+            return res.status(400).json({ error: 'Pool is not active.' });
+        }
+
+        const wallet = walletAddress.toLowerCase();
+        const contrib = pool.contributions ? pool.contributions.find(c => c.walletAddress === wallet) : null;
+        
+        if (!contrib) return res.status(404).json({ error: 'You are not a member of this pool' });
+        
+        if (contrib.hasPaidCurrentMonth) {
+            return res.status(400).json({ error: 'You have already paid for the current month.' });
+        }
+        
+        // Deduct from DB balance
+        const user = await User.findOne({ walletAddress: wallet });
+        if (user) {
+            user.tokensIssued = Math.max(0, (user.tokensIssued || 0) - contrib.monthlyContribution);
+            await user.save();
+        }
+        
+        contrib.hasPaidCurrentMonth = true;
+        contrib.monthlyPayments += 1;
+        contrib.totalContributed += contrib.monthlyContribution;
+        pool.poolTreasury += contrib.monthlyContribution;
+        
+        await pool.save();
+        
+        // Save Transaction
+        await Transaction.create({
+            walletAddress: wallet,
+            type: 'MONTHLY_PAYMENT',
+            direction: 'DEBIT',
+            amount: contrib.monthlyContribution,
+            poolId: pool._id,
+            description: `Monthly payment (${contrib.monthlyPayments}) for active pool`,
+            status: 'SUCCESS',
+            txHash: txHash || 'pending'
+        });
+        
+        res.status(200).json({ message: 'Monthly payment successful', pool });
+        
+    } catch (err) {
+        console.error('payMonthlyContribution error:', err);
+        res.status(500).json({ error: 'Server error during payment' });
     }
 };
 
@@ -557,7 +624,7 @@ exports.initDemoPool = async (req, res) => {
             }
 
             let pScore = 0;
-            // Fetch from Flask ML prediction server (all_models/server.py on port 5050)
+            // Fetch from AI Prediction Server (ai_service on port 8000)
             try {
                 const mlRes = await axios.post(`${ML_SERVER_URL}/predict`, payload);
                 if (mlRes.data && mlRes.data.priority_pct !== undefined) {
@@ -567,7 +634,7 @@ exports.initDemoPool = async (req, res) => {
                 }
             } catch (mlErr) {
                 console.error(`ML Predict error for ${cols[0]}:`, mlErr.message);
-                return res.status(503).json({ error: `AI Prediction Server (all_models/server.py) is offline. Start it with: python all_models/server.py  (runs on port 5050)` });
+                return res.status(503).json({ error: `AI Prediction Server is offline. Start it with: python run.py in ai_service folder (runs on port 8000)` });
             }
 
             const dummyWallet = cols[0]; // e.g., USR001
@@ -872,7 +939,7 @@ exports.triggerEmergency = async (req, res) => {
             };
         }
 
-        // Flask ML server (all_models/server.py on port 5050) — reprioritise after emergency approval
+        // Flask ML server (merged into AI Service on port 8000) — reprioritise after emergency approval
         let newScore = pool.contributions[contribIndex].priorityScore;
         try {
             const mlRes = await axios.post(`${ML_SERVER_URL}/predict`, payload);
