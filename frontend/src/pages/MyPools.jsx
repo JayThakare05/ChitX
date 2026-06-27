@@ -484,7 +484,11 @@ const MyPools = () => {
     try {
       const response = await fetch('http://localhost:5000/api/pools');
       const data = await response.json();
-      if (response.ok) setAvailablePools(data.pools);
+      if (response.ok) {
+        // Filter out demo/simulation pools (which don't have a creatorWallet)
+        const realPools = data.pools.filter(pool => pool.creatorWallet);
+        setAvailablePools(realPools);
+      }
     } catch (error) {
       console.error('Failed to fetch pools:', error);
     }

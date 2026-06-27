@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Wallet, CheckCircle, User, LogOut, Settings, Users, ChevronDown } from 'lucide-react';
+import { Wallet, CheckCircle, User, LogOut, Settings, Users, ChevronDown, PlusCircle } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
+import { CTX_ADDRESS } from '../../constants';
 
 const TopNav = () => {
   const navigate = useNavigate();
@@ -27,6 +28,26 @@ const TopNav = () => {
   const handleLogout = () => {
     localStorage.removeItem('chitx_user');
     navigate('/');
+  };
+
+  const handleAddToken = async () => {
+    try {
+      if (!window.ethereum) return;
+      await window.ethereum.request({
+        method: 'wallet_watchAsset',
+        params: {
+          type: 'ERC20',
+          options: {
+            address: CTX_ADDRESS,
+            symbol: 'CTX',
+            decimals: 18,
+          },
+        },
+      });
+      setShowDropdown(false);
+    } catch (error) {
+      console.error('Failed to add token to MetaMask', error);
+    }
   };
 
   return (
@@ -102,6 +123,11 @@ const TopNav = () => {
                   <Users size={16} className="text-slate-400" />
                   Team & Trust Score
                 </Link>
+                <button onClick={handleAddToken}
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-slate-50 transition-colors text-sm text-slate-600 font-medium w-full text-left">
+                  <PlusCircle size={16} className="text-teal-500" />
+                  Add CTX to MetaMask
+                </button>
                 <button onClick={handleLogout}
                   className="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-red-50 transition-colors text-sm text-red-500 font-medium w-full text-left">
                   <LogOut size={16} />

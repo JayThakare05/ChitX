@@ -28,7 +28,8 @@ app.include_router(scoring.router)
 app.include_router(oracle.router)
 app.include_router(chat.router)
 app.include_router(emergency.router)
-
+from .routes import simulator
+app.include_router(simulator.router)
 
 # ── Health check ───────────────────────────────────────────────────────────
 @app.get("/health")
