@@ -738,14 +738,14 @@ exports.simulateMonth = async (req, res) => {
                 penaltyAmount = Math.round(payoutAmount * 0.10 * 100) / 100;
                 payoutAmount = payoutAmount - penaltyAmount;
 
-                // Distribute penalty equally among remaining unpaid members
-                const remainingUnpaid = pool.contributions.filter(
-                    c => !c.hasBeenPaid && c.walletAddress !== winner.walletAddress
+                // Distribute penalty equally among ALL OTHER members' fixedDepositRemaining
+                const otherMembers = pool.contributions.filter(
+                    c => c.walletAddress !== winner.walletAddress
                 );
-                if (remainingUnpaid.length > 0) {
-                    bonusPerMember = Math.round((penaltyAmount / remainingUnpaid.length) * 100) / 100;
-                    remainingUnpaid.forEach(c => {
-                        c.targetAmount = Math.round((c.targetAmount + bonusPerMember) * 100) / 100;
+                if (otherMembers.length > 0) {
+                    bonusPerMember = Math.round((penaltyAmount / otherMembers.length) * 100) / 100;
+                    otherMembers.forEach(c => {
+                        c.fixedDepositRemaining = Math.round(((c.fixedDepositRemaining || c.fixedDeposit || 0) + bonusPerMember) * 100) / 100;
                     });
                 }
             }
@@ -757,7 +757,7 @@ exports.simulateMonth = async (req, res) => {
             // Generate detailed AI Context/Reasoning
             const rankStr = `Ranked #1 out of ${totalEligible} eligible members.`;
             const emergencyCtx = isEmergencyPayout
-                ? ` ⚠️ EMERGENCY PAYOUT: 10% penalty ($${penaltyAmount}) deducted. Actual disbursement: $${payoutAmount}. Penalty distributed as $${bonusPerMember} bonus to each of the ${pool.contributions.filter(c => !c.hasBeenPaid).length} remaining members.`
+                ? ` ⚠️ EMERGENCY PAYOUT: 10% penalty ($${penaltyAmount}) deducted. Actual disbursement: $${payoutAmount}. Penalty distributed as $${bonusPerMember} bonus to each of the ${pool.contributions.length - 1} other members' fixed deposit.`
                 : '';
             const reasoning = `Winner AI selection logic: Priority Score (${winner.priorityScore}) secured payout. Their requested target ($${winner.targetAmount.toLocaleString()}) safely fit within the current pooled treasury balance ($${balanceRemaining.toLocaleString()}). ${rankStr}${emergencyCtx}`;
             
@@ -866,7 +866,7 @@ exports.triggerEmergency = async (req, res) => {
                 category: groqResult.category || 'Unknown',
                 confidence: groqResult.confidence || 0
             },
-            status: groqApproved ? 'APPROVED' : 'REJECTED'
+            status: groqApproved ? 'PENDING_VOTE' : 'REJECTED'
         });
 
         if (!groqApproved) {
@@ -883,10 +883,21 @@ exports.triggerEmergency = async (req, res) => {
         // STEP 2: Document approved → run ML priority recalc
         // ──────────────────────────────────────────────────
 
-        // ... (CSV and payload logic remains same)
         // Try to find user in CSVs first (demo/simulation users)
-        const dynamicCsv = fs.readFileSync(path.join(__dirname, '../../chitx_random_users_test.csv'), 'utf-8').trim().split('\n');
-        const constantCsv = fs.readFileSync(path.join(__dirname, '../../chitx_test_users.csv'), 'utf-8').trim().split('\n');
+        let dynamicCsv = [];
+        let constantCsv = [];
+        
+        try {
+            dynamicCsv = fs.readFileSync(path.join(__dirname, '../../chitx_random_users_test.csv'), 'utf-8').trim().split('\n');
+        } catch (e) {
+            console.warn('Warning: chitx_random_users_test.csv not found, skipping dynamic CSV lookup.');
+        }
+
+        try {
+            constantCsv = fs.readFileSync(path.join(__dirname, '../../chitx_test_users.csv'), 'utf-8').trim().split('\n');
+        } catch (e) {
+            console.warn('Warning: chitx_test_users.csv not found, skipping constant CSV lookup.');
+        }
 
         let userLine = dynamicCsv.find(line => line.startsWith(walletAddress + ','));
         let isDynamic = true;
@@ -1111,3 +1122,108 @@ exports.forceActivatePool = async (req, res) => {
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EMERGENCY VOTE: POST /api/pools/:id/emergency/:recordId/vote
+// Allows pool members to vote on an emergency request.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.voteOnEmergency = async (req, res) => {
+    try {
+        const { id: poolId, recordId } = req.params;
+        const { walletAddress, vote } = req.body; // vote should be 'YES' or 'NO'
+
+        if (!walletAddress || !vote) {
+            return res.status(400).json({ error: 'Wallet address and vote (YES/NO) are required.' });
+        }
+        if (!['YES', 'NO'].includes(vote)) {
+            return res.status(400).json({ error: 'Vote must be YES or NO.' });
+        }
+
+        const pool = await Pool.findById(poolId);
+        if (!pool) return res.status(404).json({ error: 'Pool not found' });
+
+        const record = await EmergencyRecord.findById(recordId);
+        if (!record) return res.status(404).json({ error: 'Emergency record not found' });
+
+        if (record.status !== 'PENDING_VOTE') {
+            return res.status(400).json({ error: 'This emergency request is no longer accepting votes.' });
+        }
+
+        if (record.walletAddress === walletAddress.toLowerCase()) {
+            return res.status(400).json({ error: 'You cannot vote on your own emergency request.' });
+        }
+
+        const isMember = pool.joinedMembers.includes(walletAddress.toLowerCase());
+        if (!isMember) {
+            return res.status(403).json({ error: 'Only pool members can vote.' });
+        }
+
+        // Initialize votes array if missing
+        if (!record.votes) record.votes = [];
+
+        const existingVote = record.votes.find(v => v.walletAddress === walletAddress.toLowerCase());
+        if (existingVote) {
+            return res.status(400).json({ error: 'You have already voted on this request.' });
+        }
+
+        record.votes.push({
+            walletAddress: walletAddress.toLowerCase(),
+            vote: vote,
+            timestamp: new Date()
+        });
+
+        const eligibleVotersCount = pool.joinedMembers.length - 1; // Exclude applicant
+
+        if (record.votes.length >= eligibleVotersCount) {
+            const yesVotes = record.votes.filter(v => v.vote === 'YES').length;
+            const noVotes = record.votes.filter(v => v.vote === 'NO').length;
+
+            if (yesVotes > noVotes) {
+                record.status = 'APPROVED';
+                
+                // Apply the priority score now that it's approved by members
+                const contribIndex = pool.contributions.findIndex(c => c.walletAddress === record.walletAddress);
+                if (contribIndex !== -1) {
+                    pool.contributions[contribIndex].priorityScore = record.priorityScoreAtRequest || 100;
+                    pool.contributions[contribIndex].emergencyFlag = true;
+                    await pool.save();
+                }
+            } else {
+                record.status = 'REJECTED';
+            }
+        }
+
+        await record.save();
+        res.status(200).json({ message: 'Vote cast successfully', recordStatus: record.status });
+
+    } catch (err) {
+        console.error('Vote on emergency error:', err);
+        res.status(500).json({ error: 'Failed to cast vote: ' + err.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET PENDING VOTES: GET /api/pools/emergency/pending/:walletAddress
+// Fetches active emergency requests requiring this user's vote.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getPendingVotes = async (req, res) => {
+    try {
+        const { walletAddress } = req.params;
+        if (!walletAddress) return res.status(400).json({ error: 'Wallet address required' });
+
+        // Find pools the user is in
+        const userPools = await Pool.find({ joinedMembers: walletAddress.toLowerCase(), status: { $in: ['OPEN', 'ACTIVE', 'COUNTING_DOWN'] } });
+        const poolIds = userPools.map(p => p._id);
+
+        // Find pending emergency records in these pools, excluding the user's own requests
+        const pendingRecords = await EmergencyRecord.find({
+            poolId: { $in: poolIds },
+            status: 'PENDING_VOTE',
+            walletAddress: { $ne: walletAddress.toLowerCase() }
+        }).populate('poolId', 'name poolType contributionStyle monthlyPay status');
+
+        res.status(200).json({ pendingVotes: pendingRecords });
+    } catch (err) {
+        console.error('Pending votes fetch error:', err);
+        res.status(500).json({ error: 'Failed to fetch pending votes' });
+    }
+};

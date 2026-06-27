@@ -40,6 +40,8 @@ router.post('/bifurcate', queueController.bifurcateQueue);
 router.post('/:id/simulate-month', poolController.simulateMonth);
 router.post('/init-demo', poolController.initDemoPool);
 router.post('/:id/emergency', emergencyUpload.single('document'), poolController.triggerEmergency);
+router.post('/:id/emergency/:recordId/vote', poolController.voteOnEmergency);
+router.get('/emergency/pending/:walletAddress', poolController.getPendingVotes);
 router.get('/emergency-history/:walletAddress', poolController.getEmergencyHistory);
 
 module.exports = router;

@@ -56,7 +56,7 @@ async def extract_text_from_upload(contents: bytes, filename: str, content_type:
                         ],
                     }
                 ],
-                model="llama-3.2-90b-vision-preview",
+                model="qwen/qwen3.6-27b",
                 temperature=0.1,
                 max_tokens=1500,
             )

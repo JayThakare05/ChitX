@@ -123,13 +123,13 @@ async function executePayoutCycle(pool) {
         penaltyAmount = Math.round(payoutAmount * 0.10 * 100) / 100;
         payoutAmount = payoutAmount - penaltyAmount;
 
-        const remainingUnpaid = pool.contributions.filter(
-            c => !c.hasBeenPaid && c.walletAddress !== winner.walletAddress
+        const otherMembers = pool.contributions.filter(
+            c => c.walletAddress !== winner.walletAddress
         );
-        if (remainingUnpaid.length > 0) {
-            bonusPerMember = Math.round((penaltyAmount / remainingUnpaid.length) * 100) / 100;
-            remainingUnpaid.forEach(c => {
-                c.targetAmount = Math.round((c.targetAmount + bonusPerMember) * 100) / 100;
+        if (otherMembers.length > 0) {
+            bonusPerMember = Math.round((penaltyAmount / otherMembers.length) * 100) / 100;
+            otherMembers.forEach(c => {
+                c.fixedDepositRemaining = Math.round(((c.fixedDepositRemaining || 0) + bonusPerMember) * 100) / 100;
             });
         }
     }

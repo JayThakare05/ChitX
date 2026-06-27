@@ -151,8 +151,9 @@ const CreatePoolModal = ({ onClose, refreshPools, showResult }) => {
         // Step 1: Network Check
         if (chainId !== sepolia.id) await switchChainAsync({ chainId: sepolia.id });
 
-        // Step 2: On-chain Payment (Fixed Deposit)
-        const amountWei = parseEther(fixedDeposit.toString());
+        // Step 2: On-chain Payment (Fixed Deposit + First Month)
+        const totalInitialDeposit = fixedDeposit + effectiveMonthlyPay;
+        const amountWei = parseEther(totalInitialDeposit.toString());
         let txHash;
         try {
           txHash = await writeContractAsync({

@@ -28,8 +28,16 @@ const EmergencyRecordSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['APPROVED', 'REJECTED', 'PENDING'],
+        enum: ['APPROVED', 'REJECTED', 'PENDING', 'PENDING_VOTE'],
         default: 'PENDING'
+    },
+    votes: [{
+        walletAddress: { type: String, required: true },
+        vote: { type: String, enum: ['YES', 'NO'], required: true },
+        votedAt: { type: Date, default: Date.now }
+    }],
+    resolvedAt: {
+        type: Date
     },
     priorityScoreAtRequest: {
         type: Number

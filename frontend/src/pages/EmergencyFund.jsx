@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 const EmergencyFund = () => {
   const [history, setHistory] = useState([]);
+  const [pendingVotes, setPendingVotes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const userStr = localStorage.getItem('chitx_user');
@@ -22,10 +23,19 @@ const EmergencyFund = () => {
     else setIsRefreshing(true);
 
     try {
-      const res = await fetch(`http://localhost:5000/api/pools/emergency-history/${userWallet}`);
-      const data = await res.json();
-      if (res.ok) {
+      const [resHistory, resPending] = await Promise.all([
+        fetch(`http://localhost:5000/api/pools/emergency-history/${userWallet}`),
+        fetch(`http://localhost:5000/api/pools/emergency/pending/${userWallet}`)
+      ]);
+      
+      if (resHistory.ok) {
+        const data = await resHistory.json();
         setHistory(data.history || []);
+      }
+      
+      if (resPending.ok) {
+        const data = await resPending.json();
+        setPendingVotes(data.pendingVotes || []);
       }
     } catch (err) {
       console.error('Failed to fetch emergency history:', err);
@@ -38,6 +48,25 @@ const EmergencyFund = () => {
   useEffect(() => {
     fetchHistory();
   }, [userWallet]);
+
+  const handleVote = async (poolId, recordId, vote) => {
+    try {
+      const res = await fetch(`http://localhost:5000/api/pools/${poolId}/emergency/${recordId}/vote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ walletAddress: userWallet, vote })
+      });
+      if (res.ok) {
+        fetchHistory(true);
+      } else {
+        const error = await res.json();
+        alert(error.error || 'Failed to submit vote');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error casting vote');
+    }
+  };
 
   const getStatusBadge = (status) => {
     switch (status) {
@@ -115,6 +144,76 @@ const EmergencyFund = () => {
            </div>
         </div>
       </motion.div>
+
+      {/* Pending Votes Section */}
+      <AnimatePresence>
+        {pendingVotes.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.99, height: 0 }}
+            animate={{ opacity: 1, scale: 1, height: 'auto' }}
+            exit={{ opacity: 0, scale: 0.99, height: 0 }}
+            className="bg-[#134e4a]/90 backdrop-blur-3xl rounded-[3rem] border border-[#1aa08c]/30 shadow-2xl shadow-[#1aa08c]/20 overflow-hidden"
+          >
+            <div className="p-10 px-12 border-b border-white/5 flex flex-col sm:flex-row justify-between items-center gap-6 relative overflow-hidden">
+              <h3 className="text-[14px] font-bold text-white uppercase tracking-[0.2em] flex items-center gap-3 relative z-10">
+                <ShieldAlert size={20} className="text-amber-400" /> Pending Votes Required
+              </h3>
+              <p className="text-emerald-100/70 text-sm font-medium z-10 text-center sm:text-right">
+                Review the emergency documents and AI analysis to cast your vote.
+              </p>
+            </div>
+            <div className="p-8 px-12 grid gap-6">
+              {pendingVotes.map(record => (
+                <div key={record._id} className="bg-black/20 rounded-3xl p-6 flex flex-col md:flex-row justify-between items-center gap-8 border border-white/5 hover:border-white/10 transition-colors">
+                  <div className="flex-1 space-y-3">
+                    <div className="flex items-center gap-4">
+                      <span className="px-3 py-1 bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-full text-[10px] font-bold uppercase tracking-wider">
+                        Needs Vote
+                      </span>
+                      <span className="text-white/40 text-sm font-medium">
+                        Pool: <span className="text-white/80">{record.poolId?.name || 'Unknown Pool'}</span>
+                      </span>
+                    </div>
+                    <p className="text-white text-lg font-medium">"{record.reason}"</p>
+                    <div className="flex items-center gap-6 text-sm">
+                      <p className="text-white/60">
+                        AI Category: <span className="text-[#1aa08c] font-bold">{record.aiResult?.category}</span>
+                      </p>
+                      <p className="text-white/60">
+                        Confidence: <span className="text-[#1aa08c] font-bold">{record.aiResult?.confidence}%</span>
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center gap-4">
+                    <a 
+                      href={`http://localhost:5000${record.documentUrl}`} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-2xl text-[11px] font-bold uppercase tracking-widest transition-all border border-white/10 flex items-center gap-2"
+                    >
+                      <FileText size={16} className="text-[#1aa08c]" />
+                      Document
+                    </a>
+                    <button
+                      onClick={() => handleVote(record.poolId._id || record.poolId, record._id, 'YES')}
+                      className="px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-[#06201d] rounded-2xl text-[11px] font-bold uppercase tracking-widest transition-all shadow-[0_0_15px_rgba(16,185,129,0.3)] hover:shadow-[0_0_25px_rgba(16,185,129,0.5)] flex items-center gap-2"
+                    >
+                      <CheckCircle2 size={16} /> Approve
+                    </button>
+                    <button
+                      onClick={() => handleVote(record.poolId._id || record.poolId, record._id, 'NO')}
+                      className="px-6 py-3 bg-rose-500 hover:bg-rose-400 text-white rounded-2xl text-[11px] font-bold uppercase tracking-widest transition-all shadow-[0_0_15px_rgba(244,63,94,0.3)] hover:shadow-[0_0_25px_rgba(244,63,94,0.5)] flex items-center gap-2"
+                    >
+                      <XCircle size={16} /> Deny
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Application History Table (Deep Glass Ledger) */}
       <motion.div 
