@@ -557,7 +557,7 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
             </div>
             
             <div className="flex gap-2">
-              {!isAlreadyJoined ? (
+              {(!isAlreadyJoined && pool.status === 'OPEN') ? (
                 <button
                   onClick={openJoinConfirm}
                   disabled={isJoining || (isDynamicContribution && (!customMonthlyPay || Number(customMonthlyPay) <= 0))}
@@ -565,7 +565,7 @@ const PoolFlipCard = ({ pool, onRefresh }) => {
                 >
                   {getJoinButtonText()}
                 </button>
-              ) : canLeave ? (
+              ) : (isAlreadyJoined && canLeave) ? (
                 <>
                   <button onClick={(e) => { e.stopPropagation(); setIsExpanded(true); }} className="flex-1 py-2.5 bg-gradient-to-r from-[#1aa08c] to-[#0d9488] shadow-lg shadow-[#1aa08c]/20 text-white rounded-xl font-bold text-sm flex justify-center items-center gap-1.5 transition-all hover:scale-[1.02] active:scale-95">
                     <Layers size={14} /> About Pool

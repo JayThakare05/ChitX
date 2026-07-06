@@ -27,6 +27,7 @@ const TopNav = () => {
 
   const handleLogout = () => {
     localStorage.removeItem('chitx_user');
+    localStorage.removeItem('chitx_token');
     navigate('/');
   };
 
@@ -72,7 +73,9 @@ const TopNav = () => {
       <div className="flex items-center gap-4">
         <div className="bg-teal-50 text-teal-700 px-3 py-1.5 rounded-full flex items-center gap-1.5 border border-teal-100/50">
           <CheckCircle size={14} className="text-teal-600 fill-teal-100" />
-          <span className="text-xs font-bold uppercase tracking-wider">ZK-Verified</span>
+          <span className="text-xs font-bold uppercase tracking-wider">
+            {JSON.parse(localStorage.getItem('chitx_user') || '{}').kycStatus === 'verified' ? 'KYC-Verified' : 'Secured'}
+          </span>
         </div>
 
         {/* Wallet Badge */}

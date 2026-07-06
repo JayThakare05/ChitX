@@ -4,7 +4,8 @@ const web3Service = require('./services/web3Service');
 
 const addresses = [
     '0xcfdcfec2fb1e04141bb7a7db1bdf45542b048486',
-    '0x21f591855af66cdb916b347bf1d7694c042cd2b1'
+    '0x21f591855af66cdb916b347bf1d7694c042cd2b1',
+    '0xc7DBb2d9073491b0f5d3aB1c9EA25d342CBE99Db'
 ];
 
 async function fundUsers() {

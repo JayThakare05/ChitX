@@ -20,6 +20,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Routes ──────────────────────────────────────────────────────────────────
 app.use('/api/auth',         require('./routes/auth'));
+app.use('/api/kyc',          require('./routes/kycRoutes'));
 app.use('/api/pools',        require('./routes/poolRoutes'));
 app.use('/api/transactions', require('./routes/transactionRoutes'));
 

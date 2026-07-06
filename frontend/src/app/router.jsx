@@ -4,6 +4,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 // Pages
 import LandingPage from '../pages/LandingPage';
 import AuthFlow from '../pages/AuthFlow';
+import KYCWizard from '../pages/KYCWizard';
 import Dashboard from '../pages/Dashboard';
 import MyPools from '../pages/MyPools';
 import JointPool from '../pages/JointPool';
@@ -15,31 +16,70 @@ import AISimulation from '../pages/AISimulation';
 import EmergencyFund from '../pages/EmergencyFund';
 import { AIInsightsPage, TransactionsLog, NotificationsPage } from '../pages/Placeholders';
 
-// Shared layout (still in original location until Phase 3 moves it)
+// Shared layout
 import Layout from '../components/layout/Layout';
+
+// Auth guards
+import ProtectedRoute from '../components/auth/ProtectedRoute';
 
 export function AppRouter() {
   return (
     <Routes>
-      {/* ── Public / Onboarding ─────────────────────────── */}
+      {/* ── Public ─────────────────────────────────────────── */}
       <Route path="/" element={<LandingPage />} />
-      <Route path="/onboarding" element={<AuthFlow />} />
+      {/* Legacy /onboarding route redirects to /auth for backward compat */}
+      <Route path="/onboarding" element={<Navigate to="/auth" replace />} />
+      <Route path="/auth" element={<AuthFlow />} />
+
+      {/* ── KYC (requires login) ─────────────────────────── */}
+      <Route
+        path="/kyc"
+        element={
+          <ProtectedRoute>
+            <KYCWizard />
+          </ProtectedRoute>
+        }
+      />
 
       {/* ── Authenticated App (wrapped in Layout) ──────── */}
-      <Route path="/dashboard"      element={<Layout><Dashboard /></Layout>} />
-      <Route path="/my-pools"       element={<Layout><MyPools /></Layout>} />
-      <Route path="/joint-pool"     element={<Layout><JointPool /></Layout>} />
-      <Route path="/payments"       element={<Layout><Payments /></Layout>} />
-      <Route path="/trust-score"    element={<Layout><TrustScoreDetails /></Layout>} />
-      <Route path="/emergency-fund" element={<Layout><EmergencyFund /></Layout>} />
-      <Route path="/ai-insights"    element={<Layout><AIInsightsPage /></Layout>} />
-      <Route path="/transactions"   element={<Layout><TransactionsLog /></Layout>} />
-      <Route path="/notifications"  element={<Layout><NotificationsPage /></Layout>} />
-      <Route path="/settings"       element={<Layout><Settings /></Layout>} />
-      <Route path="/pool-simulator" element={<Layout><SimulationPanel /></Layout>} />
-      <Route path="/massive-pooling" element={<Layout><AISimulation /></Layout>} />
+      <Route path="/dashboard" element={
+        <ProtectedRoute><Layout><Dashboard /></Layout></ProtectedRoute>
+      } />
+      <Route path="/my-pools" element={
+        <ProtectedRoute><Layout><MyPools /></Layout></ProtectedRoute>
+      } />
+      <Route path="/joint-pool" element={
+        <ProtectedRoute><Layout><JointPool /></Layout></ProtectedRoute>
+      } />
+      <Route path="/payments" element={
+        <ProtectedRoute><Layout><Payments /></Layout></ProtectedRoute>
+      } />
+      <Route path="/trust-score" element={
+        <ProtectedRoute><Layout><TrustScoreDetails /></Layout></ProtectedRoute>
+      } />
+      <Route path="/emergency-fund" element={
+        <ProtectedRoute><Layout><EmergencyFund /></Layout></ProtectedRoute>
+      } />
+      <Route path="/ai-insights" element={
+        <ProtectedRoute><Layout><AIInsightsPage /></Layout></ProtectedRoute>
+      } />
+      <Route path="/transactions" element={
+        <ProtectedRoute><Layout><TransactionsLog /></Layout></ProtectedRoute>
+      } />
+      <Route path="/notifications" element={
+        <ProtectedRoute><Layout><NotificationsPage /></Layout></ProtectedRoute>
+      } />
+      <Route path="/settings" element={
+        <ProtectedRoute><Layout><Settings /></Layout></ProtectedRoute>
+      } />
+      <Route path="/pool-simulator" element={
+        <ProtectedRoute><Layout><SimulationPanel /></Layout></ProtectedRoute>
+      } />
+      <Route path="/massive-pooling" element={
+        <ProtectedRoute><Layout><AISimulation /></Layout></ProtectedRoute>
+      } />
 
-      {/* ── Fallback ──────────────────────────────────── */}
+      {/* ── Fallback ──────────────────────────────────────── */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -35,8 +35,8 @@ export default function LandingPage() {
           <NavbarLogo onClick={() => navigate('/')} />
           <NavItems items={navItems} />
           <div className="flex items-center gap-4">
-            <NavbarButton variant="secondary" onClick={() => navigate('/onboarding')}>Log In</NavbarButton>
-            <NavbarButton variant="primary" onClick={() => navigate('/onboarding')}>Launch App</NavbarButton>
+            <NavbarButton variant="secondary" onClick={() => navigate('/auth')}>Log In</NavbarButton>
+            <NavbarButton variant="primary" onClick={() => navigate('/auth')}>Launch App</NavbarButton>
           </div>
         </NavBody>
 
@@ -65,8 +65,8 @@ export default function LandingPage() {
               </a>
             ))}
             <div className="flex flex-col gap-3 pt-2">
-              <NavbarButton variant="secondary" className="w-full" onClick={() => { navigate('/onboarding'); setIsMobileMenuOpen(false); }}>Log In</NavbarButton>
-              <NavbarButton variant="primary" className="w-full" onClick={() => { navigate('/onboarding'); setIsMobileMenuOpen(false); }}>Launch App</NavbarButton>
+              <NavbarButton variant="secondary" className="w-full" onClick={() => { navigate('/auth'); setIsMobileMenuOpen(false); }}>Log In</NavbarButton>
+              <NavbarButton variant="primary" className="w-full" onClick={() => { navigate('/auth'); setIsMobileMenuOpen(false); }}>Launch App</NavbarButton>
             </div>
           </MobileNavMenu>
         </MobileNav>

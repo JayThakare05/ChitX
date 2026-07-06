@@ -6,6 +6,107 @@ const cryptoUtils = require('../utils/cryptoUtils');
 const { ethers } = require('ethers');
 const FormData = require('form-data');
 const crypto = require('crypto');
+const { generateToken } = require('../src/middleware/authMiddleware');
+
+// ================================================
+// METAMASK LOGIN — Web3 native authentication
+// ================================================
+exports.metamaskLogin = async (req, res) => {
+    try {
+        const { walletAddress, signature, message } = req.body;
+
+        if (!walletAddress || !signature || !message) {
+            return res.status(400).json({ error: 'Wallet address, signature, and message are required.' });
+        }
+
+        // 1. Verify the signature
+        const recoveredAddress = ethers.verifyMessage(message, signature);
+        
+        if (recoveredAddress.toLowerCase() !== walletAddress.toLowerCase()) {
+            return res.status(401).json({ error: 'Signature verification failed. Invalid wallet address.' });
+        }
+
+        // 2. Find or create user
+        let user = await User.findOne({ walletAddress: walletAddress.toLowerCase() });
+        
+        let isNewUser = false;
+        if (!user) {
+            user = await User.create({
+                walletAddress: walletAddress.toLowerCase(),
+                loginType: 'METAMASK',
+                kycStatus: 'pending',
+                kycStep: 0,
+                walletCreated: true // Since MetaMask IS their wallet
+            });
+            isNewUser = true;
+        }
+
+        // 3. Generate JWT
+        const token = generateToken(user._id);
+
+        res.status(isNewUser ? 201 : 200).json({
+            message: isNewUser ? 'Account created successfully.' : 'Login successful.',
+            token,
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                phone: user.phone,
+                trustScore: user.trustScore,
+                tokensIssued: user.tokensIssued,
+                walletAddress: user.walletAddress,
+                walletCreated: user.walletCreated,
+                kycStatus: user.kycStatus,
+                kycStep: user.kycStep,
+                kycConfidence: user.kycConfidence,
+                phoneVerified: user.phoneVerified,
+                employment: user.employment,
+                income: user.income,
+                expenses: user.expenses,
+                hasBankStatement: user.hasBankStatement,
+                loginType: user.loginType
+            }
+        });
+    } catch (err) {
+        console.error('MetaMask login error:', err.message);
+        res.status(500).json({ error: 'Authentication failed: ' + err.message });
+    }
+};
+
+// ================================================
+// GET ME — Return current authenticated user
+// ================================================
+exports.getMe = async (req, res) => {
+    try {
+        const user = req.user;
+        res.status(200).json({
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                phone: user.phone,
+                trustScore: user.trustScore,
+                tokensIssued: user.tokensIssued,
+                walletAddress: user.walletAddress,
+                walletCreated: user.walletCreated,
+                kycStatus: user.kycStatus,
+                kycStep: user.kycStep,
+                kycConfidence: user.kycConfidence,
+                phoneVerified: user.phoneVerified,
+                panVerified: user.panVerified,
+                aadhaarVerified: user.aadhaarVerified,
+                faceVerified: user.faceVerified,
+                bankVerified: user.bankVerified,
+                bankStatementUploaded: user.bankStatementUploaded,
+                employment: user.employment,
+                income: user.income,
+                expenses: user.expenses,
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Server error: ' + err.message });
+    }
+};
 
 // Legacy route for direct onboarding
 exports.onboarding = async (req, res) => {

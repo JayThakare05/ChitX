@@ -23,7 +23,19 @@ async def parse_statement(file: UploadFile = File(...)):
         csv_text = contents.decode("utf-8", errors="replace")
 
         print("-" * 60 + "\n")
-        df = pd.read_csv(io.StringIO(csv_text))
+        # Find the actual header row by locating the line with the most commas
+        lines = csv_text.splitlines()
+        max_commas = 0
+        header_idx = 0
+        for i, line in enumerate(lines[:30]): # Check first 30 lines
+            commas = line.count(",")
+            if commas > max_commas:
+                max_commas = commas
+                header_idx = i
+                
+        # Read the CSV starting from the detected header row
+        clean_csv = "\n".join(lines[header_idx:])
+        df = pd.read_csv(io.StringIO(clean_csv), on_bad_lines="skip")
         print(f"SUMMARY CSV Shape: {df.shape[0]} rows x {df.shape[1]} columns")
         print(f"SUMMARY Columns: {list(df.columns)}")
 
